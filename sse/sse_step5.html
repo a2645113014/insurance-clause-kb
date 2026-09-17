@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>FastAPI SSE 测试</title>
+    <!-- 仅保留必要的基础样式，无复杂装饰 -->
+    <style>
+        body { padding: 20px; }
+        #response { margin-top: 20px; white-space: pre-wrap; }
+        .progress { color: #666; }
+        .complete { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <!-- 核心交互区域 -->
+    <input type="text" id="query" placeholder="输入查询内容" style="width: 400px; padding: 5px;">
+    <button onclick="submitQuery()">提交查询</button>
+
+    <!-- 流式响应展示区 -->
+    <div id="response"></div>
+
+    <script>
+        // 后端接口地址（和你的FastAPI启动地址一致）
+        const API_BASE = 'http://127.0.0.1:8001';
+        let eventSource = null; // 存储SSE连接实例
+
+        // 提交查询的核心函数
+        async function submitQuery() {
+            const query = document.getElementById('query').value.trim();
+            if (!query) {
+                alert('请输入查询内容！');
+                return;
+            }
+
+            // 清空之前的响应内容
+            document.getElementById('response').innerHTML = '';
+
+            // 1. 调用submit_query接口获取session_id
+            try {
+                const res = await fetch(`${API_BASE}/submit_query`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: query })
+                });
+                const data = await res.json();
+                const sessionId = data.session_id;
+
+                // 2. 建立SSE连接监听流式响应
+                connectSSE(sessionId);
+            } catch (err) {
+                document.getElementById('response').innerHTML = `<div class="error">提交失败：${err.message}</div>`;
+            }
+        }
+
+        // 建立SSE连接的函数
+        function connectSSE(sessionId) {
+            // 关闭已有连接，避免重复监听
+            if (eventSource) eventSource.close();
+
+            // 创建新的SSE连接
+            eventSource = new EventSource(`${API_BASE}/stream/${sessionId}`);
+
+            // 监听进度事件（progress）
+            eventSource.addEventListener('progress', (e) => {
+                const responseDiv = document.getElementById('response');
+                responseDiv.innerHTML += `<div class="progress">${e.data}</div>`;
+            });
+
+            // 监听完成事件（complete）
+            eventSource.addEventListener('complete', (e) => {
+                const responseDiv = document.getElementById('response');
+                responseDiv.innerHTML += `<div class="complete">${e.data}</div>`;
+                eventSource.close(); // 完成后关闭连接
+            });
+
+            // 监听错误事件
+            eventSource.onerror = (e) => {
+                document.getElementById('response').innerHTML += `<div class="error">连接异常：${e.message || '未知错误'}</div>`;
+                eventSource.close();
+            };
+        }
+    </script>
+</body>
+</html>

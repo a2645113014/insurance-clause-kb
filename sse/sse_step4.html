@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>步骤4：输入查询内容</title>
+</head>
+<body>
+    <h3>步骤4：输入查询内容，SSE接收专属回答</h3>
+    <input type="text" id="queryInput" placeholder="输入查询内容" value="Python SSE怎么用">
+    <button onclick="submitQuery()">提交查询</button>
+    <div id="result"></div>
+
+    <script>
+        let eventSource = null;
+        const resultDom = document.getElementById("result");
+
+        async function submitQuery() {
+            const query = document.getElementById("queryInput").value;
+            const sessionId = "query_" + Date.now(); // 自动生成会话ID
+            resultDom.innerHTML = "";
+
+            // 1. POST提交查询内容
+            await fetch("http://127.0.0.1:8001/submit_query", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({query: query, session_id: sessionId})
+            });
+
+            // 2. 建立SSE连接
+            eventSource = new EventSource(`http://127.0.0.1:8001/stream/${sessionId}`);
+            eventSource.onmessage = function(event) {
+                resultDom.innerHTML += event.data + "<br>";
+            };
+        }
+    </script>
+</body>
+</html>

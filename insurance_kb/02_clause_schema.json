@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "insurance_clause_extraction_schema",
+  "version": "1.0",
+  "created": "2026-09-17",
+  "description": "保险条款要素抽取的公共接口。同一份定义同时承担两个职责：(1) Milvus 条款库的 metadata 字段规范；(2) 微调模型(0.6B)要素抽取任务的输出格式规范。两条链路共用一套字段名，避免 RAG 与 SFT 之间返工。",
+  "design_principles": [
+    "可溯源优先：任何抽取出的要素都必须携带 source_clause_no，使答案中的每个断言都能回溯到条款原文",
+    "枚举收敛：所有分类字段使用固定枚举，禁止自由文本，便于评测和统计",
+    "缺失显式化：条款未约定的字段必须显式输出 not_specified，而非省略或猜测，这是拒答能力的数据基础",
+    "原文不改写：value 字段在条款类/责任免除类要素中要求逐字摘录，不做同义改写"
+  ],
+
+  "enums": {
+    "insurance_type": {
+      "description": "险种类别，取值依据《人身保险公司保险条款和保险费率管理办法》第七条至第十四条",
+      "values": [
+        "人寿保险-定期寿险",
+        "人寿保险-终身寿险",
+        "人寿保险-两全保险",
+        "年金保险",
+        "年金保险-养老年金保险",
+        "健康保险-疾病保险",
+        "健康保险-医疗保险",
+        "健康保险-护理保险",
+        "健康保险-失能收入损失保险",
+        "意外伤害保险",
+        "其他"
+      ]
+    },
+    "design_type": {
+      "description": "产品设计类型，依据同办法第十七条、第十八条",
+      "values": ["普通型", "分红型", "万能型", "投资连结型", "其他"]
+    },
+    "clause_type": {
+      "description": "条款类型。切分阶段按关键词命中识别，识别结果作为 Milvus 可过滤字段",
+      "values": [
+        "保障责任",
+        "责任免除",
+        "等待期",
+        "保险期间",
+        "犹豫期",
+        "保险金申请",
+        "保险金给付",
+        "释义",
+        "合同构成与效力",
+        "保险费",
+        "现金价值与退保",
+        "保单贷款",
+        "受益人",
+        "如实告知",
+        "合同解除与变更",
+        "争议处理与法律适用",
+        "其他"
+      ],
+      "match_keywords": {
+        "保障责任": ["保险责任", "保障责任", "保险金给付责任", "我们承担的保险责任"],
+        "责任免除": ["责任免除", "除外责任", "不承担给付保险金责任", "免除保险人责任"],
+        "等待期": ["等待期", "观察期"],
+        "保险期间": ["保险期间", "保障期间", "合同效力"],
+        "犹豫期": ["犹豫期", "冷静期"],
+        "保险金申请": ["保险金申请", "申请与给付", "索赔", "理赔材料", "申请人须提供"],
+        "保险金给付": ["保险金给付", "给付比例", "给付限额", "免赔额", "赔付比例"],
+        "释义": ["释义", "名词解释", "本条款下列名词定义"],
+        "合同构成与效力": ["合同构成", "合同成立", "合同生效", "合同变更", "合同终止"],
+        "保险费": ["保险费", "交费方式", "交费期间", "宽限期", "保险费的交纳"],
+        "现金价值与退保": ["现金价值", "退保", "解除合同", "未满期净保险费"],
+        "保单贷款": ["保单贷款", "借款", "贷款金额"],
+        "受益人": ["受益人", "受益人的指定", "受益人的变更", "保险金作为遗产"],
+        "如实告知": ["如实告知", "明确说明", "告知义务", "询问"],
+        "合同解除与变更": ["合同解除", "合同变更", "解除合同的权利"],
+        "争议处理与法律适用": ["争议处理", "管辖", "诉讼", "法律适用", "司法管辖"],
+        "其他": []
+      }
+    }
+  },
+
+  "layers": {
+    "product_level": {
+      "description": "产品级元数据。来自保司披露页的表格列，在导入阶段一次性写入该产品所有 chunk",
+      "fields": {
+        "company": {"type": "string", "required": true, "note": "保险公司全称，如 中国太平洋人寿保险股份有限公司"},
+        "product_name": {"type": "string", "required": true, "note": "产品备案名称原文，不做规范化改写"},
+        "product_code": {"type": "string", "required": false, "note": "产品注册号，如 太平洋人寿[2025]疾病保险190号"},
+        "filing_no": {"type": "string", "required": false, "note": "报备文件编号或批复文号，如 太保寿〔2025〕583号"},
+        "insurance_type": {"type": "string", "required": true, "enum_ref": "insurance_type"},
+        "design_type": {"type": "string", "required": false, "enum_ref": "design_type"},
+        "effective_date": {"type": "string", "required": false, "format": "date"},
+        "stop_date": {"type": "string", "required": false, "format": "date", "note": "停售日期，用于回答'该产品是否还在售'"}
+      }
+    },
+
+    "clause_level": {
+      "description": "条款级字段。每个 chunk 一行，是 Milvus collection 的实际 schema",
+      "fields": {
+        "pk": {"type": "string", "max_length": 128, "required": true, "note": "主键，构造规则 {product_code}_{clause_no_norm}_{chunk_seq}，保证幂等导入"},
+        "vector": {"type": "float_vector", "dim": 1024, "required": true, "note": "BGE-M3 dense 向量"},
+        "sparse": {"type": "sparse_float_vector", "required": true, "note": "BGE-M3 sparse 权重，术语精确命中靠它"},
+        "text": {"type": "string", "max_length": 8192, "required": true, "note": "条款原文切片，不得改写"},
+        "clause_no": {"type": "string", "max_length": 32, "required": true, "note": "条款号原文，如 '第六条' / '6.2' / '（一）'"},
+        "clause_no_norm": {"type": "string", "max_length": 32, "required": true, "note": "归一化条款号，如 '6' / '6.2' / '6.2.1'，用于排序和引用拼接"},
+        "clause_type": {"type": "string", "required": true, "enum_ref": "clause_type", "note": "可过滤字段，检索时可限定'只在责任免除里找'"},
+        "clause_path": {"type": "string", "max_length": 256, "required": false, "note": "层级路径，如 '第六条 > 6.2'，用于展示条款归属"},
+        "clause_title": {"type": "string", "max_length": 128, "required": false, "note": "条款小标题，条款本身未写时为空"},
+        "doc_id": {"type": "string", "max_length": 128, "required": true, "note": "源文档标识，指向 MinIO 中的原始 PDF"},
+        "page_no": {"type": "int64", "required": false, "note": "原文页码，供前端跳转原件"},
+        "chunk_seq": {"type": "int64", "required": true, "note": "条款内切片序号，三级切分产生多片时用于还原顺序"},
+        "chunk_level": {"type": "string", "required": true, "note": "产生该切片的切分层级：L1条款号 / L2分项 / L3兜底"},
+        "char_len": {"type": "int64", "required": false, "note": "切片字符数，用于排查异常短/长切片"},
+        "content_hash": {"type": "string", "max_length": 64, "required": true, "note": "text 的 sha256，先删后插的幂等依据"},
+        "import_batch": {"type": "string", "max_length": 64, "required": false, "note": "导入批次号，便于整批回滚"},
+        "needs_review": {"type": "bool", "required": false, "note": "切分或抽取置信度低时置 true，供人工抽检队列消费"}
+      },
+      "index_config": {
+        "dense": {"index_type": "HNSW", "metric_type": "COSINE", "params": {"M": 16, "efConstruction": 200}},
+        "sparse": {"index_type": "SPARSE_INVERTED_INDEX", "metric_type": "IP", "params": {"drop_ratio_search": 0.2}},
+        "scalar_inverted": ["company", "insurance_type", "clause_type", "product_code", "design_type"]
+      }
+    },
+
+    "element_level": {
+      "description": "要素级抽取结果。这是微调模型(0.6B)的实际输出格式，也是评测时字段级 F1 的计算对象。每个要素统一为 {value, source_clause_no} 二元结构，缺失时 value 填 not_specified 且 source_clause_no 填 null。",
+      "element_template": {
+        "value": "string | array | null",
+        "source_clause_no": "string | null",
+        "note": "value 为条款类要素时要求逐字摘录原文；source_clause_no 必填以保证可溯源"
+      },
+      "elements": {
+        "waiting_period": {"type": "string", "desc": "等待期及其起算规则", "example": "自本合同生效之日起90日为等待期"},
+        "grace_period": {"type": "string", "desc": "宽限期天数及效力", "example": "自保险费约定支付日次日起60日为宽限期"},
+        "hesitation_period": {"type": "string", "desc": "犹豫期天数与退还规则", "example": "自签收合同之日起15日内为犹豫期，扣除工本费后退还保险费"},
+        "coverage_items": {"type": "array", "desc": "保障责任项列表，每项含责任名称与给付条件", "example": ["重大疾病保险金：确诊合同约定的重大疾病，按基本保险金额给付"]},
+        "exclusions": {"type": "array", "desc": "责任免除情形列表，逐字摘录", "example": ["投保人对被保险人的故意杀害、故意伤害"]},
+        "deductible": {"type": "string", "desc": "免赔额", "example": "1万元"},
+        "payment_ratio": {"type": "string", "desc": "给付比例及适用条件", "example": "经社保结算后按100%给付，未经社保结算按60%给付"},
+        "claim_documents": {"type": "array", "desc": "申请保险金须提交的材料清单", "example": ["保险金给付申请书", "保险合同", "医院出具的诊断证明"]},
+        "claim_time_limit": {"type": "string", "desc": "索赔时效与通知时限", "example": "自知道保险事故发生之日起10日内通知，请求权时效2年"},
+        "beneficiary_rules": {"type": "string", "desc": "受益人指定与变更规则", "example": "由被保险人或投保人指定"},
+        "dispute_resolution": {"type": "string", "desc": "争议处理方式与管辖约定", "example": "协商不成的，向被告住所地人民法院起诉"},
+        "policy_loan": {"type": "string", "desc": "保单贷款比例上限", "example": "不超过本合同现金价值扣除各项欠款后余额的80%"},
+        "surrender_rules": {"type": "string", "desc": "退保与现金价值规则", "example": "犹豫期后解除合同的，退还本合同现金价值"},
+        "renewal_rules": {"type": "string", "desc": "续保约定（健康险重点）", "example": "本合同为不保证续保合同"},
+        "definitions": {"type": "array", "desc": "释义条目列表，每项含被释义词与释义原文", "example": [{"term": "既往症", "text": "指在本合同生效日之前被保险人已患且已知晓的疾病"}]},
+        "age_gender_restriction": {"type": "string", "desc": "投保年龄与性别限制", "example": "出生满28日至60周岁"}
+      }
+    }
+  },
+
+  "downstream_uses": {
+    "milvus": "clause_level 字段直接映射为 collection schema；element_level 不落 Milvus，作为抽取结果写入 MongoDB 或作为工具返回",
+    "sft_output": "element_level 即微调模型的 target JSON，训练样本的 output 字段必须严格符合此结构",
+    "eval": "element_level 的每个 key 是一个评测字段，字段级 F1 = 逐字段比对 value 与 source_clause_no",
+    "compliance_check": "exclusions / waiting_period / deductible / payment_ratio / renewal_rules 是与负面清单交叉审查的高频字段",
+    "api_contract": "前端引用展示依赖 source_clause_no，因此该字段缺失视为抽取失败，不是可选项"
+  },
+
+  "example_output": {
+    "product_level": {
+      "company": "某某人寿保险股份有限公司",
+      "product_name": "某某重大疾病保险",
+      "product_code": "某某人寿[2025]疾病保险190号",
+      "filing_no": "某某寿〔2025〕583号",
+      "insurance_type": "健康保险-疾病保险",
+      "design_type": "普通型"
+    },
+    "elements": {
+      "waiting_period": {"value": "自本合同生效之日起90日为等待期", "source_clause_no": "第六条"},
+      "hesitation_period": {"value": "自签收本合同之日起15日内为犹豫期", "source_clause_no": "第十四条"},
+      "claim_documents": {
+        "value": ["保险金给付申请书", "保险合同", "医院出具的诊断证明", "与确认保险事故性质、原因有关的其他证明和资料"],
+        "source_clause_no": "第十一条"
+      },
+      "renewal_rules": {"value": "not_specified", "source_clause_no": null},
+      "deductible": {"value": "not_specified", "source_clause_no": null}
+    },
+    "note": "renewal_rules 与 deductible 并非漏抽，而是该产品条款确实未约定，显式输出 not_specified 是拒答能力的数据基础"
+  },
+
+  "versioning": {
+    "policy": "schema 变更必须同步三处：本文件版本号、Milvus collection 的 schema_version 字段、SFT 数据集的 schema_version 字段",
+    "breaking_change_rule": "新增枚举值不算破坏性变更；修改已有字段名或语义视为破坏性变更，必须重建 collection 并重训模型"
+  }
+}

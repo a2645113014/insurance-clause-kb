@@ -1,0 +1,17 @@
+﻿序号,来源名称,用途类别,入口URL,内容形态,覆盖范围,可得性,许可与合规,采集难度,优先级,核实状态与备注
+1,中国保险行业协会官网-保险产品栏目,RAG语料,https://www.iachina.cn/,条款PDF,人身险/财产险全行业产品,公开,行业公开信息,中,P0,已核实站点可访问；首页点"保险产品"进入产品信息库；具体栏目URL为JS渲染，需实地点击确认
+2,中保协示范条款公告,RAG语料+标准基线,https://www.iachina.cn/art/2026/6/10/art_24_109080.html,docx直链,定期寿险/终身寿险示范条款(2026修订),公开,行业公开信息,低,P0,已核实；页面附件3个docx直链，可直接下载
+3,中保协产品查询系统(财险自主注册),RAG语料,http://cxcx.iachina.cn/,HTML查询+条款,财产险自主注册产品,需注册登录,行业公开信息,中,P2,已核实；页面标题"财产保险公司自主注册产品查询"，提供个人/企业注册入口
+4,太平洋人寿-互联网保险产品信息,RAG语料+元数据源,https://www.cpic.com.cn/xrsbx/gkxxpl/hlwbxxx/hlwbxcpxx/zbbxcpxx/,HTML表格,在办产品与停办产品,公开,公司公开披露,低,P0,已核实；四列结构=备案产品名称/产品条款/报备文件编号或批复文号/产品注册号，元数据模板首选
+5,中英人寿-产品条款披露,RAG语料,https://www.aviva-cofco.com.cn/website/xxzx/gkxxpl/zxxx/gryljzq/xxpl1/index.shtml,条款PDF直链,个险产品条款与产品说明书,公开,公司公开披露,低,P0,已核实；PDF路径形如 /static/pdf/product/中英人寿XX保险_条款.pdf
+6,国富人寿-互联网保险信息披露,RAG语料+元数据源,https://www.e-guofu.com/hlwbx/2025-07-01/912.html,HTML表格,互联网专属产品,公开,公司公开披露,低,P1,已核实行平；含条款PDF+费率表+报备文件编号+条款备案编号+销售渠道+销售状态
+7,平安人寿-公开信息披露,RAG语料,https://life.pingan.com/,条款查询,部分产品,公开(仅部分产品),公司公开披露,中,P2,路径：官网上方"公开信息披露"-"基本信息"-"产品基本信息"；官方FAQ明确仅支持部分产品条款查询
+8,国家金融监督管理总局-规章文件,RAG语料(法规),https://www.nfra.gov.cn/,PDF/doc直链,保险监管规章全文,公开,政府公开信息,低,P0,已核实直链示例：人身保险公司保险条款和保险费率管理办法 https://www.nfra.gov.cn/chinese/docfile/2025/5d5991bbea7e4affb0e39fb88e1b64f4.doc
+9,国家金融监督管理总局-行政处罚公示,RAG语料(处罚案例),https://www.nfra.gov.cn/cn/view/pages/ItemDetail.html?docId=1264681,HTML表格,行政处罚信息公示表,公开,政府公开信息,中,P1,已核实；结构化列=当事人名称/处罚决定书文号/主要违法违规行为/处罚依据/处罚内容/作出决定机关/作出决定时间
+10,人身保险产品负面清单(2026版),RAG语料(红线)+合规标签体系,见同目录 04_negative_list_2026.json,结构化文本,105条/四大类,公开,监管公开信息,低,P0,已获取全文105条并结构化；由金融监管总局下发各人身保险公司，2026-04-03发布
+11,中国裁判文书网,微调语料(推理链),https://wenshu.court.gov.cn/,判决书全文,保险纠纷生效判决,公开(下载PDF需实名注册),司法公开信息,高,P2,已核实入口；人身保险合同纠纷约16万篇；展示须脱敏(当事人/案号/法院)
+12,CUFEInse保险大模型评测基准,评测集,https://huggingface.co/datasets/CUFEInse/CUFEInse,JSON,14430题/5维度,公开,Apache-2.0,低,P0,已核实；GitHub https://github.com/CUFEInse/CUFEInse ；字段=完整题目/题干/A/B/C/D/E/答案
+13,InsQABench保险问答基准,评测集+微调语料,https://github.com/HaileyFamo/InsQABench,数据集+代码,中文保险QA三类任务,公开,见仓库声明,中,P1,已核实仓库地址；论文同时提出 SQL-ReAct 与 RAG-ReAct，与本项目 RAG+Agent 路线同频
+14,金融产品查询平台,RAG语料(交叉核验),https://www.jrcpcx.cn/#/index,HTML,金融产品登记信息,公开,官方平台,中,P2,由大家财险披露页引用，用于产品信息交叉核验
+15,航运保险产品注册管理平台,RAG语料(细分领域),https://marine.shie.com.cn/front/index,HTML,航运保险产品,公开,行业平台,中,P2,由大家财险披露页引用；细分领域备选语料
+16,保险行业协会年度保险诉讼典型案例报告,微调语料(案例),中国保险行业协会出版物,书籍/报告,年度典型案例,需购买,版权作品,高,P3,二手整理语料，含评析解读；可作为SFT种子但不可再分发

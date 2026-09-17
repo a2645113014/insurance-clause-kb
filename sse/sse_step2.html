@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>步骤2：按会话ID推数据</title>
+</head>
+<body>
+    <h3>步骤2：输入会话ID，接收专属消息</h3>
+    <input type="text" id="sessionIdInput" placeholder="输入会话ID（如123）" value="123">
+    <button onclick="connectSSE()">连接SSE</button>
+    <div id="result"></div>
+
+    <script>
+        let eventSource = null;
+        const resultDom = document.getElementById("result");
+
+        function connectSSE() {
+            const sessionId = document.getElementById("sessionIdInput").value;
+            resultDom.innerHTML = "";
+
+            // ✅ 新增：URL带session_id参数
+            eventSource = new EventSource(`http://127.0.0.1:8001/stream/${sessionId}`);
+            eventSource.onmessage = function(event) {
+                resultDom.innerHTML += event.data + "<br>";
+            };
+        }
+    </script>
+</body>
+</html>

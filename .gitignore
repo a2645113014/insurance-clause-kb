@@ -1,0 +1,59 @@
+# ============================================================
+# insurance-clause-kb  .gitignore
+# 入库原则：源码与设计资产入库；密钥、可重建依赖、运行时产物一律不入库
+# ============================================================
+
+# ---------- 1. 密钥与凭证：最高优先级，绝不能提交 ----------
+.env
+.env.*
+!.env.example
+
+# ---------- 2. 虚拟环境（1090 MB，uv sync 可重建）----------
+.venv/
+venv/
+env/
+ENV/
+
+# ---------- 3. Python 编译缓存与构建产物 ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---------- 4. 测试 / 静态检查缓存 ----------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------- 5. IDE / 编辑器配置 ----------
+# 注：.idea 里带着旧机器的解释器绑定（uv (WH260713_knowledge_base)），已失效，不入库
+.idea/
+.vscode/
+*.iml
+*.iws
+*.swp
+
+# ---------- 6. 运行时产物：导入中间件、日志、临时文件 ----------
+# output/ 是 FastAPI 导入链路的中间件产物（MD / 图片 / PDF），按 task_id 生成，不入库
+logs/
+output/
+temp-files/
+*.log
+
+# ---------- 7. WorkBuddy 本地工作记忆 ----------
+# 变动频繁，属工具侧数据，不入库。
+# 若想版本化项目记忆，删掉下面一行，换成：
+#   .workbuddy/*
+#   !.workbuddy/memory
+.workbuddy/
+
+# ---------- 8. 操作系统垃圾 ----------
+Thumbs.db
+desktop.ini
+.DS_Store
