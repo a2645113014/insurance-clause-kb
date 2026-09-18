@@ -27,21 +27,23 @@ def step_1_merge_docs(state):
         # 判断entity是否是字典
         if not isinstance(entity, dict):
             continue
-        # 获取content
-        content = entity.get("content")
+        # 获取条款正文（字段名与 02_clause_schema.json 对齐，正文字段为 text）
+        content = entity.get("text")
         # 判断content是否为空
         if not content:
             continue
-        # 分别获取chunk_id和title(item_name)
-        chunk_id = entity.get("chunk_id") or entity.get("id")
-        title = entity.get("title") or entity.get("item_name")
+        # 切片主键 pk 用于回溯单条切片，doc_id 用于回溯整份 PDF，二者粒度不同不可混用
+        pk = entity.get("pk") or entity.get("id")
+        doc_id = entity.get("doc_id") or ""
+        # 展示用标题：优先条款小标题，缺失时退化为层级路径，再退化为产品名
+        title = entity.get("clause_title") or entity.get("clause_path") or entity.get("item_name")
         # 将数据转为固定的结构并存储到doc_items
         doc_items.append(
             {
                 "text": content,
                 "title": title,
-                "doc_id": chunk_id,
-                "chunk_id": chunk_id,
+                "doc_id": doc_id,
+                "pk": pk,
                 "url": "",
                 "source": "local"
             }
@@ -58,7 +60,7 @@ def step_1_merge_docs(state):
                 "text": snippet,
                 "title": title,
                 "doc_id": "",
-                "chunk_id": "",
+                "pk": "",
                 "url": url,
                 "source": "web"
             }
@@ -90,7 +92,7 @@ def step_2_rerank_docs(state, doc_items):
                     "text": text,
                     "score": float(score),
                     "doc_id": item["doc_id"],
-                    "chunk_id": item["chunk_id"],
+                    "pk": item["pk"],
                     "url": item["url"],
                     "title": item["title"],
                     "source": item["source"]
@@ -141,9 +143,9 @@ def step_3_topk(scored_docs):
 def node_rerank(state: QueryGraphState):
     # 记录当前任务的状态为进行中
     add_running_task(state["session_id"], "node_rerank", state["is_stream"])
-    # 阶段一：合并文档，[{text,title,doc_id,chunk_id,url,source}]
+    # 阶段一：合并文档，[{text,title,doc_id,pk,url,source}]
     doc_items = step_1_merge_docs(state)
-    # 阶段二：对文档进行重排序，[{text,score,title,doc_id,chunk_id,url,source}]
+    # 阶段二：对文档进行重排序，[{text,score,title,doc_id,pk,url,source}]
     scored_docs = step_2_rerank_docs(state, doc_items)
     # 阶段三：动态 TopK
     topk_docs = step_3_topk(scored_docs)
@@ -157,11 +159,11 @@ if __name__ == "__main__":
     print("=" * 50)
 
     # 1. 模拟数据
-    # 1.1 RRF 本地文档数据
+    # 1.1 RRF 本地文档数据（字段名与 02_clause_schema.json 对齐：pk / text / clause_title / doc_id）
     mock_rrf_chunks = [
-        {"entity":{"chunk_id": "local_1", "content": "RRF是一种倒数排名融合算法", "title": "算法介绍", "score": 0.9}},
-        {"entity":{"chunk_id": "local_2", "content": "BGE是一个强大的重排序模型", "title": "模型介绍", "score": 0.8}},
-        {"entity":{"chunk_id": "local_3", "content": "无关的测试文档内容", "title": "测试文档", "score": 0.1}}  # 预期低分
+        {"entity":{"pk": "local_1", "text": "RRF是一种倒数排名融合算法", "clause_title": "算法介绍", "doc_id": "doc_1", "score": 0.9}},
+        {"entity":{"pk": "local_2", "text": "BGE是一个强大的重排序模型", "clause_title": "模型介绍", "doc_id": "doc_1", "score": 0.8}},
+        {"entity":{"pk": "local_3", "text": "无关的测试文档内容", "clause_title": "测试文档", "doc_id": "doc_1", "score": 0.1}}  # 预期低分
     ]
 
     # 1.2 MCP 联网搜索数据

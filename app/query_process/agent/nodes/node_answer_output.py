@@ -38,8 +38,8 @@ def step_2_construct_prompt(state: QueryGraphState):
     history_list = state.get("history")
     """
     将reranked_docs中的数据转换为以下格式：
-    "[1] [local] [chunk_id=123] [score=0.95] [title=操作手册]
-     这里是文档的正文内容..."
+    "[1] [local] [pk=01_xxx.pdf_6.2_1] [score=0.95] [title=责任免除]
+     这里是条款的正文内容..."
     """
     # 处理上下文，创建存储处理之后的结果的列表
     docs = []
@@ -55,9 +55,10 @@ def step_2_construct_prompt(state: QueryGraphState):
         source = chunk.get("source")
         if source:
             data_list.append(f"[{source}]")
-        chunk_id = chunk.get("chunk_id")
-        if chunk_id:
-            data_list.append(f"[chunk_id={chunk_id}]")
+        # 引用标记用切片主键 pk（与 02_clause_schema.json 对齐），供前端回溯到具体条款切片
+        pk = chunk.get("pk")
+        if pk:
+            data_list.append(f"[pk={pk}]")
         score = chunk.get("score")
         if score is not None:
             data_list.append(f"[score={float(score):.4f}]")

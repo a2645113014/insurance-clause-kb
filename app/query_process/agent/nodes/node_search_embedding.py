@@ -35,7 +35,9 @@ def node_search_embedding(state: QueryGraphState):
     )
     # 获取Milvus客户端对象
     milvus_client = get_milvus_client()
-    # 进行混合检索
+    # 进行混合检索。
+    # 字段名与 02_clause_schema.json 的 clause_level 对齐；主键 pk 不在这里列
+    # （Milvus 主键不从 entity 字段走，下游用 Hit.id 读取）
     results = hybrid_search(
         client=milvus_client,
         collection_name=milvus_config.chunks_collection,
@@ -43,7 +45,10 @@ def node_search_embedding(state: QueryGraphState):
         ranker_weights=(0.8, 0.2),
         norm_score=True,
         limit=5,
-        output_fields=["chunk_id", "content", "item_name"]
+        output_fields=[
+            "text", "item_name", "product_name", "clause_no", "clause_no_norm",
+            "clause_path", "clause_title", "clause_type", "doc_id",
+        ]
     )
     # 记录当前任务的状态为已完成
     add_done_task(state["session_id"], "node_search_embedding", state["is_stream"])
@@ -51,11 +56,12 @@ def node_search_embedding(state: QueryGraphState):
 
 
 if __name__ == "__main__":
-    # 模拟测试数据
+    # 模拟测试数据。item_names 必须与 Milvus 里 item_name 字段完全一致（expr 是精确匹配），
+    # 该值由导入链路的 item_name_recognition 节点用 LLM 识别后写入
     test_state = {
         "session_id": "test_search_embedding_001",
-        "rewritten_query": "HAK 180 烫金机使用说明",  # 模拟改写后的查询
-        "item_names": ["HAK 180 烫金机"],  # 模拟已确认的商品名
+        "rewritten_query": "太保盈有余（2026A）年金保险的犹豫期是多少天？",  # 模拟改写后的查询
+        "item_names": ["太保盈有余（2026A）年金保险（互联网）"],  # 模拟已确认的产品名
         "is_stream": False
     }
 

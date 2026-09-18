@@ -5,6 +5,74 @@
 
 ---
 
+## 2026-09-18 查询链路字段契约贯通（VARCHAR 主键 pk 打通三路检索 → RRF → 重排 → 答案生成）
+
+**改动**
+- `app/clients/milvus_utils.py` → `_coerce_int64_ids` 改为 `_normalize_pk_ids`（主键已是 VARCHAR 复合键，任何类型转换都会损坏它，且原实现对中文主键必然抛错）；`fetch_chunks_by_chunk_ids` 更名 `fetch_chunks_by_pks` 并更新默认返回字段；`pk in [...]` 过滤表达式按 VARCHAR 逐项补单引号；`AnnSearchRequest` 的 `anns_field` 从 `dense_vector` / `sparse_vector` 改为 `vector` / `sparse`。
+- `app/query_process/agent/nodes/node_search_embedding.py` / `node_search_embedding_hyde.py` → `output_fields` 从 `["chunk_id","content","item_name"]` 换为新字段组；hyde 删掉误从 `torch.distributed.checkpoint` 引入的 logger，改回项目自己的 logger（原写法语义错位且与本项目日志格式不一致）。
+- `app/query_process/agent/nodes/node_rrf.py` → RRF 融合的分组键从 `chunk_id` 改为 `pk`；Milvus Hit 的主键改用 `Hit.id` 读取；缺主键的条目跳过计分，避免同一切片被重复加权。
+- `app/query_process/agent/nodes/node_rerank.py` → 正文取值 `entity.get("content")` 改 `text`；主键改 `pk`；展示标题改为「条款小标题 → 层级路径 → 产品名」三级降级；`doc_items` 结构中的 `chunk_id` 拆分为 `pk`（切片级）与 `doc_id`（文档级）。
+- `app/query_process/agent/nodes/node_answer_output.py` → prompt 中的引用标记从 `[chunk_id=...]` 改为 `[pk=...]`。
+
+**技术点**
+
+| 技术点 | 类型 | 在本项目中怎么用的 | 掌握层级 |
+|---|---|---|---|
+| 跨链路字段契约贯通 | 接口设计 | 存储侧改字段名后，检索 / 融合 / 重排 / 生成四段链路同步对齐，避免静默失配 | 能讲清原理 |
+| Milvus 主键读取路径 | 向量库机制 | 主键不走 `output_fields`，须经 `Hit.id` 读取；混用会导致检索结果拿不到主键且不报错 | 能讲清原理 |
+| 多级降级取展示字段 | 容错设计 | 展示标题按「小标题 → 层级路径 → 产品名」逐级降级，章级切片无小标题也不会空 | 会调用 |
+| 融合去重的健壮性 | 算法实现 | RRF 按主键去重累加分值，缺主键条目显式跳过而非抛 `KeyError` 打断整轮检索 | 会调用 |
+
+**简历话术**
+> 完成检索侧与存储侧的字段契约贯通：把三路并行检索、RRF 融合、重排、答案生成四段链路的主键读取统一到 VARCHAR 复合主键 `pk`，并修正 Milvus「主键不通过 `output_fields` 返回、须经 `Hit.id` 读取」这一机制细节，消除了检索结果拿不到主键导致引用标记静默失效的问题。
+
+**面试追问**
+- Q：为什么主键要单独处理？ → 要点：Milvus 的主键不从 `output_fields` 返回，它是 Hit 对象上的独立属性（`Hit.id`）。原实现靠 `hit.chunk_id` 从 entity 字段里取，主键一改名就失效；更麻烦的是这类失效是**静默的** —— 不抛错，只是引用标记变空、RRF 分组键取不到。所以我改走 `Hit.id`，并在 RRF 里对缺主键的条目显式跳过而不是硬拼。
+- Q：为什么必须在融合前去重？ → 要点：RRF 的分组键就是主键，同一份切片被多路召回时必须累加分数而不是各算一次，否则融合排序会失真。
+
+**验证**
+> 检索链路单测跑通：查询「太保盈有余（2026A）年金保险的犹豫期是多少天」经混合检索（dense 0.8 / sparse 0.2 加权）返回 5 条，Top1 精准命中 `clause_no=1.4 / clause_type=犹豫期` 条款，相似度 0.846，`pk` 与 `text` 均正确回传。
+
+---
+
+## 2026-09-18 条款库落 Milvus 新 schema（27 字段 / VARCHAR 复合主键），导入链路端到端打通
+
+**改动**
+- `insurance_kb/02_clause_schema.json` → 版本 1.0 → 1.1；`clause_level.fields` 补 `schema_version`（建库版本，供破坏性变更判断）与 `item_name`（LLM 识别名，检索过滤键）两个字段，并写明它与 `product_name`（台账备案名）的分工。
+- `app/import_process/agent/nodes/node_import_milvus.py` → 整节点重写。集合从 9 字段 / `auto_id=True` / INT64 `chunk_id` 主键，改为 27 字段 / `auto_id=False` / VARCHAR(128) `pk` 复合主键；新增 `step_0_load_product_meta` 从语料台账补产品级元数据；幂等删除依据从 LLM 产出的 `item_name` 改为确定性的 `doc_id`；删除「插入后回填自增主键」逻辑，改为插入前构造 `pk`；所有字符串字段写入前按 UTF-8 字节裁剪。
+- `app/import_process/agent/nodes/node_bge_embedding.py` → 向量字段名 `dense_vector` / `sparse_vector` 改为 `vector` / `sparse`，与 schema 的 `anns_field` 统一，消除入库时的字段名映射。
+- `app/import_process/agent/nodes/node_document_split.py` → 切片补 `doc_id`（源文件标识）与 `needs_review`（L3 兜底或短于 80 字时置真，供人工抽检队列消费）。
+- `app/import_process/agent/nodes/node_item_name_recognition.py` → 修复跨节点字段断链：正文与标题取值从 `chunk["content"]` / `chunk["title"]` 改为 `chunk["text"]` / `clause_title | clause_path`，并对缺字段做兜底（章级切片没有小标题）。
+- `test/06_import_test.py` → 测试语料从通用商品手册换成真实条款 PDF；入库判据从 `chunk_id` 改为 `pk`；补 `sys.path` 注入使其可被直接执行。
+
+**技术点**
+
+| 技术点 | 类型 | 在本项目中怎么用的 | 掌握层级 |
+|---|---|---|---|
+| VARCHAR 复合主键替代自增主键 | 数据建模 | 主键改为 `{doc_id}_{clause_no_norm}_{chunk_seq}`，插入前即可确定，从而支持「同一条款覆盖式重导」 | 能讲清原理 |
+| 幂等导入（先删后插） | 数据一致性 | 删除条件从 LLM 推理值换成确定性文件标识，配合内容指纹 sha256 保证重复导入不堆积 | 能讲清原理 |
+| 声明式 schema 与代码对齐 | 接口契约 | 字段定义集中在 `02_clause_schema.json`，Milvus collection、微调输出契约、评测字段三处共用一份定义 | 能讲清原理 |
+| 标量倒排索引 | 向量库调优 | 为 5 个高基数过滤字段建 `INVERTED` 索引，使 `hybrid_search` 的 `expr` 过滤不退化成全表扫描 | 会调用 |
+| 元数据外挂（导入期 join 台账） | 数据工程 | 导入时按文件名 join 语料台账，补齐权威备案信息；台账缺失时降级留空而不阻断主流程 | 会调用 |
+| 业务值向枚举收敛 | 数据治理 | 台账「险种」的业务简称映射到监管口径枚举，未收录值落到「其他」而非存自由文本 | 会调用 |
+| UTF-8 字节级字段截断 | 容错设计 | Milvus 的 `max_length` 按字节计（一个汉字 3 字节），统一在写入前裁剪，把失败挡在批量 insert 之前 | 会调用 |
+
+**简历话术**
+> 主导条款库从通用商品集合迁移到领域 schema：将 9 字段自增主键集合重构为 27 字段、以 `{doc_id}_{条款号归一值}_{切片序号}` 复合字符串为主键的新集合，用「文档级先删后插 + 内容指纹校验」实现幂等重导，并为公司 / 险种 / 条款类型 / 产品注册号 / 设计类型 5 个过滤字段建立标量倒排索引，支撑「只在责任免除条款里检索」这类定向查询。
+
+> 在导入阶段引入语料台账 join，自动补齐产品级权威元数据（保险公司 / 备案名 / 注册号 / 报备文号 / 险种），并把台账的业务简称收敛为监管口径枚举，使「按险种过滤」这类查询维度在数据层就成立，而不是留给检索层做模糊匹配。
+
+**面试追问**
+- Q：为什么放弃自增主键？ → 要点：自增主键表达不了「同一条款重复导入应当覆盖」。条款语料会持续更新，用自增主键每次插入都是新行、重复导入必然堆积。换成业务构造的复合主键后，pk 在插入前就确定，重复导入天然覆盖。
+- Q：为什么幂等删除用 doc_id 而不是产品名？ → 要点：产品名是 LLM 从条款正文推理出来的，同一份文档两次识别结果可能不一致，拿它当删除条件旧数据清不干净；且按产品名删会误伤该产品的其他文档（主条款 + 附加条款 + 费率表）。文件标识确定性、粒度刚好。
+- Q：主键里为什么要带 chunk_seq？ → 要点：一个超长条款会被切成多片（L2/L3），此时条款号不再唯一，必须叠加切片序号才能保证主键唯一。
+- Q：中文做字符串主键有什么坑？ → 要点：Milvus 的 VARCHAR `max_length` 按字节计而不是字符数，一个汉字 3 字节。所以所有字符串字段写入前都过一层按 UTF-8 字节裁剪 —— 否则一个「看着不长」的中文标题就能让整批 insert 直接失败。
+
+**验证**
+> 端到端跑通导入链路（entry → 解析 → 切分 → 产品命名 → 向量化 → 入库）7 节点全绿；单份条款切分 44 片，全部完成双向量化并落库，`count(*)` = 44；重复导入两次，pk 完全一致、总条数不变，幂等生效；集合 schema 实查 27 字段、7 个索引（2 向量 + 5 标量倒排）、`auto_id=False`；台账 join 命中验证通过（险种「年金」正确收敛为「年金保险」，未命中文件降级为空字段且不报错）。
+
+---
+
 ## 2026-09-18 文档切分重写为「条款号锚定 + 三级切分」，切片带上可溯源的条款元数据
 
 **改动**

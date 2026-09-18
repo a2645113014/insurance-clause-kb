@@ -31,39 +31,42 @@ def get_milvus_client():
         return None
 
 
-def _coerce_int64_ids(ids):
+def _normalize_pk_ids(ids):
     """
-    转换chunk_id为Milvus要求的INT64类型（主键字段schema为INT64）
-    过滤无效ID，分离可转换/不可转换的ID
-    :param ids: 待转换的chunk_id列表
-    :return: 元组(ok_ids, bad_ids)，ok_ids为可转换的int64类型ID列表，bad_ids为无效ID列表
+    规整主键列表。条款库的主键 pk 是 VARCHAR 复合键（形如 `01_CPIC_年金_xxx.pdf_6.2_1`），
+    不是自增 INT64 —— 对它做任何类型转换都会损坏主键（int() 会直接抛错）。
+    这里只做去空与去首尾空白，保留原字符串。
+    :param ids: 待规整的 pk 列表
+    :return: 元组(ok_ids, bad_ids)，bad_ids 为空值或空字符串的条目
     """
     ok, bad = [], []
     for x in (ids or []):
         if x is None:
+            bad.append(x)
             continue
-        try:
-            ok.append(int(x))
-        except Exception:
+        text = str(x).strip()
+        if text:
+            ok.append(text)
+        else:
             bad.append(x)
     return ok, bad
 
 
-def fetch_chunks_by_chunk_ids(
+def fetch_chunks_by_pks(
         client,
         collection_name: str,
-        chunk_ids,
+        pks,
         *,
         output_fields=None,
         batch_size: int = 100,
 ):
     """
-    通过chunk_id主键批量查询Milvus中的切片数据
-    用于补全「仅拥有chunk_id无文本内容」场景的切片信息
+    通过 pk 主键批量查询Milvus中的条款切片数据
+    用于补全「仅拥有 pk 无文本内容」场景的切片信息
     优先使用get方法（主键直查，性能最优），失败则回退query过滤查询
     :param client: MilvusClient实例
     :param collection_name: 集合名称
-    :param chunk_ids: 待查询的chunk_id列表
+    :param pks: 待查询的 pk 列表
     :param output_fields: 需要返回的字段列表，默认返回核心切片字段
     :param batch_size: 分批查询大小，避免单次查询数据量过大，默认100
     :return: List[dict]，Milvus实体字典列表，查询失败返回空列表
@@ -73,15 +76,18 @@ def fetch_chunks_by_chunk_ids(
         return []
     if not collection_name:
         return []
-    # 默认返回字段：核心切片标识与内容字段
+    # 默认返回字段：条款库的核心元数据与内容字段（字段名与 02_clause_schema.json 对齐）
     if output_fields is None:
-        output_fields = ["chunk_id", "content", "title", "parent_title", "item_name"]
+        output_fields = [
+            "pk", "text", "clause_no", "clause_no_norm",
+            "clause_path", "clause_title", "clause_type", "doc_id", "item_name",
+        ]
 
-    # 转换ID为INT64类型，分离有效/无效ID
-    ok_ids, bad_ids = _coerce_int64_ids(chunk_ids)
+    # 规整主键字符串，分离有效/无效条目
+    ok_ids, bad_ids = _normalize_pk_ids(pks)
     if bad_ids:
-        # 记录无效ID，跳过查询
-        logger.warning(f"存在无法转换为INT64的chunk_id，将跳过查询：{bad_ids}")
+        # 记录无效主键，跳过查询
+        logger.warning(f"存在无效的 pk（空值或空串），将跳过查询：{bad_ids}")
 
     # 无有效ID直接返回空
     if not ok_ids:
@@ -102,14 +108,15 @@ def fetch_chunks_by_chunk_ids(
             except Exception as e:
                 logger.warning(f"Milvus get方法查询失败，将回退至query方法：{str(e)}")
 
-        # 方式2：get方法失败，回退使用filter过滤查询
+        # 方式2：get方法失败，回退使用filter过滤查询。
+        # pk 是 VARCHAR，表达式里必须逐个加单引号 —— 这与原 INT64 主键的写法不同，漏引号会解析失败
         try:
-            expr = f"chunk_id in [{', '.join(str(x) for x in batch)}]"
+            expr = "pk in [" + ", ".join(f"'{x}'" for x in batch) + "]"
             q = client.query(collection_name=collection_name, filter=expr, output_fields=output_fields)
             if q:
                 results.extend(q)
         except Exception as e:
-            logger.error(f"Milvus query方法批量查询chunk_id失败：{str(e)}", exc_info=True)
+            logger.error(f"Milvus query方法批量查询pk失败：{str(e)}", exc_info=True)
 
     return results
 
@@ -134,19 +141,19 @@ def create_hybrid_search_requests(dense_vector, sparse_vector, dense_params=None
     if sparse_params is None:
         sparse_params = {"metric_type": "IP"}
 
-    # 构建稠密向量搜索请求，关联Milvus的dense_vector字段 近似最近邻（ANN）检索请求的核心类
+    # 构建稠密向量搜索请求，关联Milvus的vector字段（字段名与 02_clause_schema.json 对齐） 近似最近邻（ANN）检索请求的核心类
     dense_req = AnnSearchRequest(
         data=[dense_vector],
-        anns_field="dense_vector",
+        anns_field="vector",
         param=dense_params,
         expr=expr,
         limit=limit
     )
 
-    # 构建稀疏向量搜索请求，关联Milvus的sparse_vector字段
+    # 构建稀疏向量搜索请求，关联Milvus的sparse字段
     sparse_req = AnnSearchRequest(
         data=[sparse_vector],
-        anns_field="sparse_vector",
+        anns_field="sparse",
         param=sparse_params,
         expr=expr,
         limit=limit
@@ -175,9 +182,11 @@ def hybrid_search(client: MilvusClient, collection_name, reqs, ranker_weights=(0
         # norm_score=True：先将两个向量评分归一化到0~1区间，再加权计算
         rerank = WeightedRanker(ranker_weights[0], ranker_weights[1], norm_score=norm_score)
 
-        # 默认返回字段：文档标识字段
+        # 默认返回字段：产品名。
+        # 注意不列 pk —— Milvus 的主键不从 entity 字段走，检索结果的主键请用 Hit.id 读取；
+        # item_name 是 LLM 识别名（检索过滤键），product_name 是台账备案名（展示用）
         if output_fields is None:
-            output_fields = ["item_name"]
+            output_fields = ["item_name", "product_name"]
 
         # 执行混合搜索：融合稠密+稀疏向量结果，按权重重新排序
         res = client.hybrid_search(

@@ -1,9 +1,9 @@
-from torch.distributed.checkpoint import logger
-
 from app.clients.milvus_utils import create_hybrid_search_requests, hybrid_search, get_milvus_client
 from app.conf.milvus_config import milvus_config
 from app.core.load_prompt import load_prompt
-from app.core.logger import node_log, step_log
+# 原写法误从 torch.distributed.checkpoint 借用 logger（标准 logging 对象），
+# 虽能打印但语义错位、且与本项目日志格式不一致，改回项目自己的 logger
+from app.core.logger import logger, node_log, step_log
 from app.lm.embedding_utils import generate_embeddings
 from app.lm.lm_utils import get_llm_client
 from app.query_process.agent.state import QueryGraphState
@@ -30,7 +30,8 @@ def step_2_search_embedding_hyde(
     limit: int = 5, # 混合检索的数据量
     ranker_weights=(0.8, 0.2),  # 调整默认权重以偏向稠密向量 (0.8, 0.2)
     norm_score: bool = True,    # 默认开启归一化
-    output_fields=["chunk_id", "content", "item_name"],
+    output_fields=["text", "item_name", "product_name", "clause_no", "clause_no_norm",
+                   "clause_path", "clause_title", "clause_type", "doc_id"],
 ):
     # 拼接rewritten_query和hyde_doc
     text = rewritten_query + " " + hyde_doc
