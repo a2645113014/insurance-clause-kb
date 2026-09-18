@@ -46,14 +46,22 @@ output/
 temp-files/
 *.log
 
-# ---------- 7. WorkBuddy 本地工作记忆 ----------
+# ---------- 7. 保险条款语料：版权归保险公司，原文不入库 ----------
+# 清单 §8.1：公开可查 ≠ 可再分发，项目展示只放少量样例 + 采集说明，不打包发布语料。
+# 只保留 sources.csv（纯元数据）与 chunks/（本项目自产的切分结果）。
+data/clauses/pdf/
+data/clauses/md/
+# 采集器运行时日志（下划线开头 = 临时产物）
+data/clauses/_*
+
+# ---------- 8. WorkBuddy 本地工作记忆 ----------
 # 变动频繁，属工具侧数据，不入库。
 # 若想版本化项目记忆，删掉下面一行，换成：
 #   .workbuddy/*
 #   !.workbuddy/memory
 .workbuddy/
 
-# ---------- 8. 操作系统垃圾 ----------
+# ---------- 9. 操作系统垃圾 ----------
 Thumbs.db
 desktop.ini
 .DS_Store
