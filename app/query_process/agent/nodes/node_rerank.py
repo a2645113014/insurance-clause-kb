@@ -1,17 +1,21 @@
 from app.core import logger
 from app.core.logger import node_log, step_log
+# 断崖 TopK 的四个阈值统一由配置面板提供，消融时改 .env 不改代码
+from app.conf.retrieval_config import retrieval_config
 from app.lm.reranker_utils import get_reranker_model
 from app.query_process.agent.state import QueryGraphState
 from app.utils.task_utils import add_running_task, add_done_task
 
-# 动态 TopK 硬上限：最多取前 N 条（<=10）
-RERANK_MAX_TOPK: int = 10
+# 下面四个常量保留模块级名字（不破坏任何按名导入它们的脚本），但取值只有一个源头：配置面板。
+# 原来的硬编码值分别是 10 / 1 / 0.5 / 2，改配置化后行为不变，只是变得可调。
+# 动态 TopK 硬上限：最多取前 N 条
+RERANK_MAX_TOPK: int = retrieval_config.rerank_max_topk
 # 最小 TopK：至少保留前 N 条（>=1，且 <= RERANK_MAX_TOPK）
-RERANK_MIN_TOPK: int = 1
+RERANK_MIN_TOPK: int = retrieval_config.rerank_min_topk
 # 断崖阈值（相对）
-RERANK_GAP_RATIO: float = 0.5
+RERANK_GAP_RATIO: float = retrieval_config.rerank_gap_ratio
 # 断崖阈值（绝对）
-RERANK_GAP_ABS: float = 2
+RERANK_GAP_ABS: float = retrieval_config.rerank_gap_abs
 
 @step_log("step_1_merge_docs")
 def step_1_merge_docs(state):

@@ -1,5 +1,7 @@
 from app.clients.milvus_utils import hybrid_search, get_milvus_client, create_hybrid_search_requests
 from app.conf.milvus_config import milvus_config
+# 检索阈值（权重 / 召回条数）统一由配置面板提供，消融时改 .env 不改代码
+from app.conf.retrieval_config import retrieval_config
 from app.core.logger import logger, node_log
 from app.lm.embedding_utils import generate_embeddings
 from app.query_process.agent.state import QueryGraphState
@@ -31,7 +33,7 @@ def node_search_embedding(state: QueryGraphState):
         dense_vector=dense_vector,
         sparse_vector=sparse_vector,
         expr=expr,
-        limit=5
+        limit=retrieval_config.req_limit
     )
     # 获取Milvus客户端对象
     milvus_client = get_milvus_client()
@@ -42,9 +44,11 @@ def node_search_embedding(state: QueryGraphState):
         client=milvus_client,
         collection_name=milvus_config.chunks_collection,
         reqs=reqs,
-        ranker_weights=(0.8, 0.2),
+        # 权重来自 .env 的 RANKER_WEIGHTS（改造前硬编码 (0.8, 0.2)）
+        ranker_weights=retrieval_config.ranker_weights,
+        # norm_score 必须为 True：不归一化时稠密/稀疏的分数不在同一量级，权重会被量级淹没而失效
         norm_score=True,
-        limit=5,
+        limit=retrieval_config.retrieval_limit,
         output_fields=[
             "text", "item_name", "product_name", "clause_no", "clause_no_norm",
             "clause_path", "clause_title", "clause_type", "doc_id",
