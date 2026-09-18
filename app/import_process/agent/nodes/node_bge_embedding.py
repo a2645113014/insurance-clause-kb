@@ -34,11 +34,22 @@ def step_2_generate_embeddings(chunks):
         try:
             # 对此批次需要处理的切片进行遍历
             for chunk in batch_chunks:
-                # 分别获取每个切片的item_name和content
-                item_name = chunk["item_name"]
-                content = chunk["content"]
-                # 对item_name和content进行拼接
-                text = f"商品：{item_name}，介绍：{content}" if item_name else content
+                # 获取切片正文（字段名与 02_clause_schema.json 对齐，正文为 text）
+                chunk_text = chunk["text"]
+                # 产品名（由 item_name_recognition 节点产出，切分阶段还不存在）与条款层级路径
+                item_name = chunk.get("item_name")
+                clause_path = chunk.get("clause_path")
+                # 拼接用于向量化的文本，三段各有用途：
+                #   产品名   —— 隔离不同产品的同名条款（如多家保司都有「2.2 责任免除」）
+                #   条款路径 —— 补充层级语义（「2 我们提供的保障 > 2.5 责任免除」）
+                #   条款原文 —— 检索主体
+                context_parts = []
+                if item_name:
+                    context_parts.append(f"产品：{item_name}")
+                if clause_path:
+                    context_parts.append(f"条款：{clause_path}")
+                context_parts.append(chunk_text)
+                text = "；".join(context_parts)
                 # 存储每个切片拼接之后的结果
                 texts.append(text)
             # 将texts转换为向量
@@ -101,17 +112,17 @@ if __name__ == '__main__':
     # 构造模拟测试状态：模拟上游节点输出的chunks数据，贴合真实业务场景
     test_state = ImportGraphState({
         "task_id": "test_task_embedding_001",  # 测试任务ID
-        "chunks": [  # 模拟带item_name的文本切片（上游商品名称识别节点产出）
+        "chunks": [  # 模拟带item_name的文本切片（上游节点产出）
             {
-                "content": "这是一个测试文档的内容，用于验证向量化是否成功。",
-                "title": "测试文档标题",
-                "item_name": "测试项目",
+                "text": "这是一个测试文档的内容，用于验证向量化是否成功。",
+                "clause_path": "1 测试章 > 1.1 测试条款",
+                "item_name": "测试产品",
                 "file_title": "测试文件.pdf"
             },
             {
-                "content": "这是第二个测试文档的内容，用于验证批量处理逻辑。",
-                "title": "测试文档标题2",
-                "item_name": "测试项目",
+                "text": "这是第二个测试文档的内容，用于验证批量处理逻辑。",
+                "clause_path": "1 测试章 > 1.2 测试条款二",
+                "item_name": "测试产品",
                 "file_title": "测试文件.pdf"
             }
         ]
@@ -127,8 +138,9 @@ if __name__ == '__main__':
 
         # 验证向量生成结果（打印向量字段是否存在）
         for idx, chunk in enumerate(result_chunks):
-            has_dense = "dense" in chunk
-            has_sparse = "sparse" in chunk
+            # 回填字段名为 dense_vector / sparse_vector（原写法误用 dense / sparse，永远判为未成功）
+            has_dense = bool(chunk.get("dense_vector"))
+            has_sparse = bool(chunk.get("sparse_vector"))
             logger.info(
                 f"第{idx + 1}条切片：稠密向量生成{'' if has_dense else '未'}成功 | 稀疏向量生成{'' if has_sparse else '未'}成功")
 
