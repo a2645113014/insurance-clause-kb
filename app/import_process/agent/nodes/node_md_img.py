@@ -44,6 +44,12 @@ def step_1_get_content(state: ImportGraphState):
         state["md_content"] = md_path_obj.read_text(encoding="utf-8")
     # 获取存储md文件所对应的图片的目录路径
     images_dir_obj = md_path_obj.parent / "images"
+    # 兜底保障：PyMuPDF 直抽路径不产生 images/ 子目录（PDF 无内嵌图片时 MinerU 同样不产生），
+    # 此处补建空目录，避免下游 step_2_scan_images 的 iterdir() 抛 FileNotFoundError。
+    # 目录为空时后续步骤会自然跳过，最终 md_content 不发生改变。
+    if not images_dir_obj.exists():
+        images_dir_obj.mkdir(parents=True, exist_ok=True)
+        logger.info(f"图片目录不存在，已创建空目录：{images_dir_obj}")
     return state["md_content"], md_path_obj, images_dir_obj
 
 @step_log("step_2_scan_images")

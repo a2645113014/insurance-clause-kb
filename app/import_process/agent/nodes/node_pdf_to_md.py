@@ -5,6 +5,7 @@ import time
 import zipfile
 from pathlib import Path
 
+import fitz  # PyMuPDF：本地读取 PDF 文本层，不依赖外部服务
 import requests
 
 from app.conf.mineru_config import mineru_config
@@ -13,12 +14,43 @@ from app.import_process.agent.state import ImportGraphState, create_default_stat
 from app.utils.task_utils import add_running_task, add_done_task
 
 """
+本节点职责：把 PDF 变成纯文本并写入 state["md_content"]，对下游保持出口契约不变
+（state["md_path"] + state["md_content"]）。
+
+执行策略为「本地优先、云端兜底」两路：
+
+【主路】PyMuPDF(fitz) 本地直抽 —— 零成本、毫秒级、全角标点原样保留、条款号在行首
+  原因：保险条款 PDF 绝大多数由排版软件导出，自带干净文本层；用 OCR 类服务反而会把
+  正文误判为表格、把全角逗号转成半角，破坏「value 逐字摘录原文」的可验证性。
+
+【兜底】MinerU 云端 OCR —— 仅当主路判定「无文本层」（纯扫描件/图片型 PDF）时启用
+
+质量分级三档（见 assess_text_quality）：
+  ok               → 用 fitz 结果直接返回
+  no_text_layer    → 返回 None，由调用方转 MinerU OCR 兜底
+  broken_encoding  → 抛错拒收（字体缺 ToUnicode 映射，两路都拿不到正确字符）
+
 1.  **准备参数**: 获取 PDF 路径和输出目录。
-2.  **请求上传**: 调用 MinerU 在线 API (`/file-urls/batch`) 获取上传链接。
-3.  **上传文件**: 将 PDF 文件 PUT 到签名 URL。
-4.  **轮询结果**: 循环查询任务状态 (`/extract-results/batch/{batch_id}`)，直到完成。
-5.  **获取结果**: 下载生成的 ZIP 包，解压并读取 `.md` 文件内容到 state。
+2.  **本地直抽**: PyMuPDF 抽取全文并对文本层质量分级。
+3.  **兜底判定**: 无文本层时调用 MinerU 在线 API (`/file-urls/batch`) 获取上传链接。
+4.  **上传文件**: 将 PDF 文件 PUT 到签名 URL。
+5.  **轮询结果**: 循环查询任务状态 (`/extract-results/batch/{batch_id}`)，直到完成。
+6.  **获取结果**: 下载生成的 ZIP 包，解压并读取 `.md` 文件内容到 state。
 """
+
+# ==================== 文本层质量判定阈值 ====================
+# 每页平均字符数低于此值 → 判定为「无文本层」（纯扫描件），转 MinerU OCR 兜底
+MIN_CHARS_PER_PAGE = 50
+# CJK 字符占非空白字符比例低于此值 → 判定为「字体缺 ToUnicode 映射」，任何解析器都无法还原
+MIN_CJK_RATIO = 0.05
+# fitz 文本块是否按纵向坐标重排。
+# 【2026-09-18 实测 17 份真语料】必须置 False：
+#   本批条款 PDF 多为「左标题列 + 右正文列」的表格式排版，且内容流本身已是正确的阅读
+#   顺序。置 True 会按 y 坐标把左右两列的内容拼到同一行，实测产生 14~23 行跨栏错拼
+#   （如把「(1)保险合同；(2)申请人及…」错拼成「(1)保险合同；请所需的证明(…」），
+#   条款号落在行首的比例从 ~82% 跌到 ~40%。
+#   两种模式下「去除全部空白后的字符数」完全相等（差值 0），说明不丢内容，差异仅在排列。
+PYMUPDF_SORT_BLOCKS = False
 
 @step_log("step_1_validate_paths")
 def step_1_validate_paths(state: ImportGraphState):
@@ -61,10 +93,96 @@ def step_1_validate_paths(state: ImportGraphState):
     # 返回pdf_path_obj和local_dir_obj
     return pdf_path_obj, local_dir_obj
 
-@step_log("step_2_upload_and_poll")
-def step_2_upload_and_poll(pdf_path_obj, local_dir_obj):
+def assess_text_quality(text: str, page_count: int):
     """
-    步骤2：上传PDF至MinerU并轮询解析任务状态
+    对抽取出的文本做质量分级，决定是否可以信任本地抽取结果。
+    :param text: PyMuPDF 抽取出的全文
+    :param page_count: PDF 页数
+    :return: (level, chars_per_page, cjk_ratio)
+             level 取值 ok / no_text_layer / broken_encoding
+    """
+    # 去掉首尾空白后统计字符数，避免空白页把均值抬高
+    stripped_text = text.strip()
+    total_chars = len(stripped_text)
+    # 每页平均字符数：纯扫描件的文本层通常为空或只有零星页码
+    chars_per_page = total_chars / page_count if page_count > 0 else 0.0
+    # 统计非空白字符数作为 CJK 占比的分母（排除换行/空格对比例的干扰）
+    non_space_chars = sum(1 for ch in stripped_text if not ch.isspace())
+    # 统计 CJK 统一表意文字数量（\u4e00-\u9fff 覆盖常用汉字区）
+    cjk_chars = sum(1 for ch in stripped_text if "\u4e00" <= ch <= "\u9fff")
+    # CJK 占比：中文条款正常应在 60% 以上，低于 5% 说明取到的全是错误码位
+    cjk_ratio = cjk_chars / non_space_chars if non_space_chars > 0 else 0.0
+
+    if chars_per_page < MIN_CHARS_PER_PAGE:
+        return "no_text_layer", chars_per_page, cjk_ratio
+    if cjk_ratio < MIN_CJK_RATIO:
+        return "broken_encoding", chars_per_page, cjk_ratio
+    return "ok", chars_per_page, cjk_ratio
+
+@step_log("step_2_extract_with_pymupdf")
+def step_2_extract_with_pymupdf(pdf_path_obj: Path, local_dir_obj: Path, stem: str):
+    """
+    步骤2（主路）：本地 PyMuPDF 直抽文本 + 文本层质量分级
+    :param pdf_path_obj: 已校验的 PDF Path 对象
+    :param local_dir_obj: 输出目录 Path 对象
+    :param stem: PDF 无后缀纯名称，用于命名输出文件
+    :return: 质量合格时返回 MD 文件绝对路径；判定无文本层时返回 None（交调用方走 MinerU）
+    :raise ValueError: 判定为 broken_encoding（字体缺 ToUnicode 映射，不可用）
+    """
+    # 打开 PDF 文档
+    pdf_doc = fitz.open(str(pdf_path_obj))
+    try:
+        # 获取总页数
+        page_count = pdf_doc.page_count
+        # 逐页抽取纯文本。
+        # sort=PYMUPDF_SORT_BLOCKS：按文本块纵向坐标重排，修正双栏排版的跨栏错序。
+        page_text_list = [
+            page.get_text("text", sort=PYMUPDF_SORT_BLOCKS) for page in pdf_doc
+        ]
+    finally:
+        # 无论抽取是否异常都要释放文档句柄
+        pdf_doc.close()
+
+    # 拼接全文（页间用空行分隔，保留页面边界信息便于后续定位页码）
+    raw_text = "\n\n".join(page_text_list)
+    # 质量分级
+    level, chars_per_page, cjk_ratio = assess_text_quality(raw_text, page_count)
+    logger.info(
+        f"PyMuPDF 抽取完成：页数={page_count}，每页字符数={chars_per_page:.1f}，"
+        f"CJK占比={cjk_ratio:.1%}，判定={level}"
+    )
+
+    # 无文本层：不落盘，直接交调用方走 MinerU OCR 兜底
+    if level == "no_text_layer":
+        logger.warning(
+            f"{pdf_path_obj.name} 每页字符数仅 {chars_per_page:.1f}（阈值 {MIN_CHARS_PER_PAGE}），"
+            f"判定为无文本层，转 MinerU OCR 兜底"
+        )
+        return None
+
+    # 写出 MD 文件，目录结构与 MinerU 输出保持一致：local_dir/<stem>/<stem>.md
+    target_dir_obj = local_dir_obj / stem
+    target_dir_obj.mkdir(parents=True, exist_ok=True)
+    md_path_obj = target_dir_obj / f"{stem}.md"
+    md_path_obj.write_text(raw_text, encoding="utf-8")
+
+    # 编码损坏：留痕后抛错，绝不静默产出垃圾切片进库
+    if level == "broken_encoding":
+        rejected_path_obj = target_dir_obj / f"{stem}.REJECTED.md"
+        rejected_path_obj.write_text(raw_text, encoding="utf-8")
+        md_path_obj.unlink(missing_ok=True)
+        raise ValueError(
+            f"{pdf_path_obj.name} 文本层 CJK 占比仅 {cjk_ratio:.1%}（阈值 {MIN_CJK_RATIO:.0%}），"
+            f"判定为字体缺少 ToUnicode 映射表，PyMuPDF 与 MinerU 均无法还原正确字符。"
+            f"坏样本已写出至 {rejected_path_obj}，请更换该产品其他版本或从语料中剔除"
+        )
+
+    return str(md_path_obj.resolve())
+
+@step_log("step_3_upload_and_poll")
+def step_3_upload_and_poll(pdf_path_obj, local_dir_obj):
+    """
+    步骤3（兜底）：上传PDF至MinerU并轮询解析任务状态
     核心流程：配置校验 → 获取上传链接 → 文件上传（含重试） → 任务轮询（直至完成/失败/超时）
     参数：pdf_path_obj-已校验的PDF Path对象；output_dir_obj-输出目录Path对象
     返回：解析结果ZIP包下载链接full_zip_url
@@ -179,10 +297,10 @@ def step_2_upload_and_poll(pdf_path_obj, local_dir_obj):
             # 表示任务进行中，等待3秒，重新发送请求
             time.sleep(poll_interval)
 
-@step_log("step_3_download_and_extract")
-def step_3_download_and_extract(zip_url: str, local_dir_obj: Path, stem: str):
+@step_log("step_4_download_and_extract")
+def step_4_download_and_extract(zip_url: str, local_dir_obj: Path, stem: str):
     """
-    步骤3：下载MinerU解析结果ZIP包并解压，提取目标MD文件（重命名统一规范）
+    步骤4（兜底）：下载MinerU解析结果ZIP包并解压，提取目标MD文件（重命名统一规范）
     核心流程：下载ZIP → 清理旧目录并解压 → 查找MD文件（按优先级） → 重命名统一为PDF同名
     参数：zip_url-ZIP包下载链接；output_dir_obj-输出目录Path；pdf_stem-PDF无后缀纯名称
     返回：最终MD文件的字符串格式绝对路径
@@ -251,10 +369,16 @@ def node_pdf_to_md(state: ImportGraphState) -> ImportGraphState:
     add_running_task(state["task_id"], "node_pdf_to_md")
     # 步骤1：路径校验
     pdf_path_obj, local_dir_obj = step_1_validate_paths(state)
-    # 步骤2：通过MinerU将pdf转换为md
-    zip_url = step_2_upload_and_poll(pdf_path_obj, local_dir_obj)
-    # 步骤3：下载压缩包并解压
-    final_md_path = step_3_download_and_extract(zip_url, local_dir_obj, pdf_path_obj.stem)
+    # 取PDF无后缀名，供输出文件命名与目录命名使用
+    stem = pdf_path_obj.stem
+    # 步骤2：主路 —— 本地 PyMuPDF 直抽（零成本、毫秒级、标点与条款号原样保留）
+    # 返回 None 表示文本层为空，判定为纯扫描件，需走云端 OCR 兜底
+    final_md_path = step_2_extract_with_pymupdf(pdf_path_obj, local_dir_obj, stem)
+    # 步骤3、4：兜底 —— 仅当主路判定无文本层时，才调用 MinerU 云端 OCR
+    if not final_md_path:
+        logger.info("主路判定为无文本层，启动 MinerU OCR 兜底")
+        zip_url = step_3_upload_and_poll(pdf_path_obj, local_dir_obj)
+        final_md_path = step_4_download_and_extract(zip_url, local_dir_obj, stem)
     # 更新状态中的md_path
     state["md_path"] = final_md_path
     # 将md文件中内容保存到状态的md_content中
@@ -266,22 +390,38 @@ def node_pdf_to_md(state: ImportGraphState) -> ImportGraphState:
 
 if __name__ == "__main__":
 
-    # 单元测试：验证PDF转MD全流程
+    # 单元测试：批量验证 data/clauses/pdf 下全部语料的解析质量
     logger.info("===== 开始node_pdf_to_md节点单元测试 =====")
 
     from app.utils.path_util import PROJECT_ROOT
     logger.info(f"测试获取根地址：{PROJECT_ROOT}")
 
-    test_pdf_name = os.path.join("doc", "hak180产品安全手册.pdf")
-    test_pdf_path = os.path.join(PROJECT_ROOT, test_pdf_name)
+    # 语料目录
+    test_pdf_dir_obj = Path(PROJECT_ROOT) / "data" / "clauses" / "pdf"
+    test_pdf_list = sorted(test_pdf_dir_obj.glob("*.pdf"))
 
-    # 构造测试状态
-    test_state = create_default_state(
-        task_id="test_pdf2md_task_001",
-        pdf_path=test_pdf_path,
-        local_dir=os.path.join(PROJECT_ROOT, "output")
-    )
-
-    print(node_pdf_to_md(test_state))
+    if not test_pdf_list:
+        logger.error(f"语料目录下没有 PDF：{test_pdf_dir_obj}")
+    else:
+        logger.info(f"待解析语料数量：{len(test_pdf_list)}")
+        # 汇总每个文件的解析结果
+        summary_list = []
+        for pdf_file_obj in test_pdf_list:
+            test_state = create_default_state(
+                task_id=f"test_pdf2md_{pdf_file_obj.stem}",
+                pdf_path=str(pdf_file_obj),
+                local_dir=str(Path(PROJECT_ROOT) / "output"),
+            )
+            try:
+                result_state = node_pdf_to_md(test_state)
+                summary_list.append(
+                    (pdf_file_obj.name, "OK", len(result_state.get("md_content") or ""), "")
+                )
+            except Exception as e:
+                summary_list.append((pdf_file_obj.name, "FAIL", 0, str(e)))
+        # 打印汇总表
+        logger.info("===== 解析汇总 =====")
+        for file_name, status, char_count, err_msg in summary_list:
+            logger.info(f"{status} | {char_count} 字符 | {file_name} | {err_msg}")
 
     logger.info("===== 结束node_pdf_to_md节点单元测试 =====")
