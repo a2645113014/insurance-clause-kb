@@ -46,6 +46,8 @@ MIN_BODY_LINE_LEN = 25
 MIN_BODY_RUN = 2
 # L2 切分的长度硬上限（优先不切断子项，故允许适度超过 CHUNK_SIZE）
 L2_HARD_CAP = int(CHUNK_SIZE * 1.6)
+# 人工抽检阈值：短于此长度的切片置 needs_review，通常是条款被截断或目录区残留
+MIN_REVIEW_LEN = 80
 
 # ==================== 条款号正则 ====================
 # 顶层（太平洋式）：全角句点，且后面不是数字（排除 `1.1`）
@@ -403,6 +405,11 @@ def build_chunk(section, full_text, file_title, top_section, clause_type_keyword
                 "char_len": len(piece_text),
                 # text 的 sha256，作为「先删后插」幂等导入的校验依据
                 "content_hash": hashlib.sha256(piece_text.encode("utf-8")).hexdigest(),
+                # 源文档标识。承担两个职责：Milvus 幂等删除的过滤键（filter doc_id ==）、pk 的组成部分。
+                # 用文件标题（= PDF/MD 的 stem）而非产品名 —— 一个产品可能对应多份文档，文件级标识不会误伤
+                "doc_id": file_title,
+                # 低置信标记：L3 说明条款被递归兜底强行截断，过短说明切分可能留下残片，两者都进人工抽检队列
+                "needs_review": chunk_level == "L3" or len(piece_text) < MIN_REVIEW_LEN,
                 "file_title": file_title,
             }
         )

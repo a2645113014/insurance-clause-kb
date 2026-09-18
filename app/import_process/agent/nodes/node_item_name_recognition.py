@@ -44,9 +44,11 @@ def step_2_build_context(chunks):
     total_chars = 0
     # 对前DEFAULT_ITEM_NAME_CHUNK_K个chunks进行遍历
     for idx, chunk in enumerate(chunks, start=1):
-        # 获取切片的标题和内容
-        title = chunk["title"]
-        content = chunk["content"]
+        # 获取切片的标题和内容。
+        # 字段名与 02_clause_schema.json 对齐：切分节点的产出是 clause_title / clause_path 与 text。
+        # 用 get 而非下标 —— 章级切片可能没有小标题，此时标题退化为层级路径，不因缺字段中断识别
+        title = chunk.get("clause_title") or chunk.get("clause_path") or ""
+        content = chunk.get("text") or ""
         # 将切片组装为：切片:idx，标题:title，内容:content
         data = f"切片：{idx}，标题：{title}，内容：{content}"
         # 存储data
@@ -194,19 +196,22 @@ if __name__ == "__main__":
             "task_id": "test_task_123456",  # 测试任务ID
             "file_title": "华为Mate60 Pro手机使用说明书",  # 模拟文件标题
             "file_name": "华为Mate60Pro说明书.pdf",  # 模拟原始文件名（兜底用）
-            # 模拟文本切片列表（上游切片节点产出，含title/content字段）
+            # 模拟文本切片列表（上游切分节点产出，字段为 clause_title / clause_path / text）
             "chunks": [
                 {
-                    "title": "产品简介",
-                    "content": "华为Mate60 Pro是华为公司2023年发布的旗舰智能手机，搭载麒麟9000S芯片，支持卫星通话功能，屏幕尺寸6.82英寸，分辨率2700×1224。"
+                    "clause_title": "产品简介",
+                    "clause_path": "1 产品说明 > 1.1 产品简介",
+                    "text": "华为Mate60 Pro是华为公司2023年发布的旗舰智能手机，搭载麒麟9000S芯片，支持卫星通话功能，屏幕尺寸6.82英寸，分辨率2700×1224。"
                 },
                 {
-                    "title": "拍照功能",
-                    "content": "华为Mate60 Pro后置5000万像素超光变摄像头+1200万像素超广角摄像头+4800万像素长焦摄像头，支持5倍光学变焦，100倍数字变焦。"
+                    "clause_title": "拍照功能",
+                    "clause_path": "1 产品说明 > 1.2 拍照功能",
+                    "text": "华为Mate60 Pro后置5000万像素超光变摄像头+1200万像素超广角摄像头+4800万像素长焦摄像头，支持5倍光学变焦，100倍数字变焦。"
                 },
                 {
-                    "title": "电池参数",
-                    "content": "电池容量5000mAh，支持88W有线超级快充，50W无线超级快充，反向无线充电功能。"
+                    "clause_title": "电池参数",
+                    "clause_path": "1 产品说明 > 1.3 电池参数",
+                    "text": "电池容量5000mAh，支持88W有线超级快充，50W无线超级快充，反向无线充电功能。"
                 }
             ]
         })

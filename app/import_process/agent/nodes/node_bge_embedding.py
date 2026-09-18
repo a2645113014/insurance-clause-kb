@@ -64,9 +64,11 @@ def step_2_generate_embeddings(chunks):
                 for index, doc in enumerate(batch_chunks):
                     # 对chunk进行浅拷贝
                     chunk = doc.copy()
-                    # 回填稠密向量和稀疏向量
-                    chunk["dense_vector"] = embeddings["dense"][index]
-                    chunk["sparse_vector"] = embeddings["sparse"][index]
+                    # 回填稠密向量和稀疏向量。
+                    # 字段名 vector / sparse 与 02_clause_schema.json 一致，也与 Milvus 集合的 anns_field 一致，
+                    # 入库时无需再做字段名映射，检索侧也不必记两套名字
+                    chunk["vector"] = embeddings["dense"][index]
+                    chunk["sparse"] = embeddings["sparse"][index]
                     # 存储到final_chunks中
                     final_chunks.append(chunk)
         except Exception as e:
@@ -138,9 +140,9 @@ if __name__ == '__main__':
 
         # 验证向量生成结果（打印向量字段是否存在）
         for idx, chunk in enumerate(result_chunks):
-            # 回填字段名为 dense_vector / sparse_vector（原写法误用 dense / sparse，永远判为未成功）
-            has_dense = bool(chunk.get("dense_vector"))
-            has_sparse = bool(chunk.get("sparse_vector"))
+            # 字段名为 vector / sparse（与 02_clause_schema.json 对齐）
+            has_dense = bool(chunk.get("vector"))
+            has_sparse = bool(chunk.get("sparse"))
             logger.info(
                 f"第{idx + 1}条切片：稠密向量生成{'' if has_dense else '未'}成功 | 稀疏向量生成{'' if has_sparse else '未'}成功")
 

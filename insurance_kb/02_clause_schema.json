@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "name": "insurance_clause_extraction_schema",
-  "version": "1.0",
+  "version": "1.1",
   "created": "2026-09-17",
   "description": "保险条款要素抽取的公共接口。同一份定义同时承担两个职责：(1) Milvus 条款库的 metadata 字段规范；(2) 微调模型(0.6B)要素抽取任务的输出格式规范。两条链路共用一套字段名，避免 RAG 与 SFT 之间返工。",
   "design_principles": [
@@ -109,7 +109,9 @@
         "char_len": {"type": "int64", "required": false, "note": "切片字符数，用于排查异常短/长切片"},
         "content_hash": {"type": "string", "max_length": 64, "required": true, "note": "text 的 sha256，先删后插的幂等依据"},
         "import_batch": {"type": "string", "max_length": 64, "required": false, "note": "导入批次号，便于整批回滚"},
-        "needs_review": {"type": "bool", "required": false, "note": "切分或抽取置信度低时置 true，供人工抽检队列消费"}
+        "needs_review": {"type": "bool", "required": false, "note": "切分或抽取置信度低时置 true，供人工抽检队列消费"},
+        "schema_version": {"type": "string", "max_length": 16, "required": true, "note": "建库时的 schema 版本号，与本文档 version 字段同步。破坏性变更需重建 collection 时，据此判断旧数据是否整批重导"},
+        "item_name": {"type": "string", "max_length": 256, "required": true, "note": "由导入链路的 item_name_recognition 节点用 LLM 从条款原文识别出的产品名。它是检索侧的过滤键（hybrid_search 的 expr 用它），与 product_name（台账备案名，权威展示用）并存 —— 用户提问说的是口语化产品名，不一定等于备案名，两个字段各司其职"}
       },
       "index_config": {
         "dense": {"index_type": "HNSW", "metric_type": "COSINE", "params": {"M": 16, "efConstruction": 200}},
