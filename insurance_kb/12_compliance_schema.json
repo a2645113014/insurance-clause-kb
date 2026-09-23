@@ -1,0 +1,56 @@
+{
+  "version": "1.0",
+  "created": "2026-09-23",
+  "description": "《人身保险产品负面清单（2026版）》合规规则集合 compliance_rules 的字段定义与索引设计（Phase 3.2 合规审查链路的数据契约）。",
+  "storage": {
+    "engine": "mongodb",
+    "db_env_key": "MONGO_DB_NAME",
+    "collection_env_key": "COMPLIANCE_COLLECTION",
+    "collection_default": "compliance_rules",
+    "unique_key": "_id（等于 NL-{item_no:03d}，幂等 upsert 的依据）",
+    "why_not_milvus": "三个理由。① 规模：105 条 × 1024 维稠密向量合计约 430KB，本机内存里做一次暴力余弦是微秒级 —— 为 105 条维护一套 Milvus 索引 + 导入流程，运维成本远大于收益；规模上到万级再迁。② 语义：这 105 条是**判定标准**（拿它去比对待审表述），不是**待检语料**（拿相似度去召回）；把标准做成向量检索会引入召回误差，而召回误差在这里直接等于漏判。③ 边界：向量能力已由 insurance_clauses 承担，合规条目只借 embedding 模型算相似度，不新开集合、不动 Phase 2.4 的产品隔离。"
+  },
+  "source": {
+    "file": "insurance_kb/04_negative_list_2026.json",
+    "title": "人身保险产品“负面清单”（2026版）",
+    "issuer": "国家金融监督管理总局",
+    "publish_date": "2026-04-03",
+    "total_items": 105,
+    "categories": [
+      {"id": "1", "name": "产品条款表述", "count": 27},
+      {"id": "2", "name": "产品责任设计", "count": 23},
+      {"id": "3", "name": "产品费率厘定及精算假设", "count": 36},
+      {"id": "4", "name": "产品报送管理", "count": 19}
+    ],
+    "note": "条文全文整理自公开转载内容，用于本项目知识库语料与合规审查标签体系；合规定稿以监管原文为准。"
+  },
+  "fields": {
+    "_id": {"type": "string", "required": true, "note": "NL-{item_no:03d}，如 NL-012。业务唯一键，幂等 upsert 靠它。"},
+    "item_no": {"type": "int", "required": true, "note": "负面清单条号（1~105）。答案引用时展示给用户，必须与监管原文件一致。"},
+    "category_id": {"type": "string", "required": true, "note": "四大类 id（1~4）。"},
+    "category_name": {"type": "string", "required": true, "note": "四大类名称。写进答案的 category 字段。"},
+    "text": {"type": "string", "required": true, "note": "条目原文。**逐字保留**，不概括、不改写 —— 它是判定依据，改写即失真。"},
+    "scope": {"type": "string", "required": true, "note": "适用产品范围原文，如「通用」「医疗保险」「护理保险/年金保险/医疗保险」。保留原文，不做归并。"},
+    "scope_tags": {"type": "array[string]", "required": true, "note": "scope 按「/」切分去空后的标签列表。「通用」表示适用全部产品，检索时恒带。"},
+    "is_2026_new": {"type": "boolean", "required": false, "note": "2026 版新增条目。"},
+    "is_2026_modified": {"type": "boolean", "required": false, "note": "2026 版修订条目。"},
+    "dense_vector": {"type": "array[float]", "required": true, "note": "bge-m3 稠密向量（1024 维，模型原生 L2 归一化）。导入时预计算并落库 —— 查询时只编码待审表述，105 条不再重复编码。"},
+    "embed_model": {"type": "string", "required": true, "note": "生成向量所用的模型路径。换模型必须重导，否则新旧向量不同空间、余弦无意义。"},
+    "schema_version": {"type": "string", "required": true},
+    "created_at": {"type": "string", "required": true, "note": "ISO8601"}
+  },
+  "indexes": [
+    {"name": "idx_item_no", "fields": [["item_no", 1]], "note": "按条号取条目；答案引用的条号要能反查回原文"},
+    {"name": "idx_category", "fields": [["category_id", 1]], "note": "按大类统计与抽检"},
+    {"name": "idx_scope_tags", "fields": [["scope_tags", 1]], "note": "multikey 索引：按产品险种兜底补条目（通用条目恒带）"}
+  ],
+  "index_note": "_id 天然唯一。向量检索不走索引 —— 全量 105 条载入内存做余弦，索引帮不上也不会成为瓶颈。",
+  "retrieval": {
+    "strategy": "向量检索 top-k + 通用/险种兜底 + **子集声明**",
+    "why_not_full_injection": "105 条原文合计 5079 字（约 4000 token），**塞得进上下文** —— 路线图担心的「放不下」在当前数据规模上不成立。但 100 条里只有 2~3 条与待审表述相关，无关条目会稀释判断（prompt 硬性规则要求「逐项比对构成要件」，条目越多越容易抓错参照）。故仍走检索。",
+    "why_scope_fallback": "很多条目 scope=通用，对任何产品都适用。只按相似度取 top-k 会漏掉「相关但语义不像」的通用条目 —— 例如审「免责条款未集中列明」时，语义最像的是条 2，但通用条 5「设置不合理的约定限制消费者合法权利」同样适用。",
+    "why_subset_declaration": "**这是本设计最关键的一道防线。** prompt 硬性规则第 1 条要求「判定只能基于给定条目」，于是检索漏召回会直接表现为**把违规判成合规** —— 比答不出来危险得多。因此喂进 prompt 的文本必须显式声明「这是 105 条里筛出的子集」，并把「依据不足时判无法判定」写进提示，把漏召回从「静默放过」转成「显式说不知道」。",
+    "top_k": 12,
+    "always_include": ["scope_tags 含「通用」", "scope_tags 与产品险种双向包含匹配"]
+  }
+}
