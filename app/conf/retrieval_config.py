@@ -43,7 +43,31 @@ DEFAULT_RERANK_GAP_RATIO = 0.5
 # 改造前的硬编码值就是 2。这里保持 2 作为默认以复现原行为，
 # 路线图建议试 1（条款切片比商品手册自包含，分数分布更紧凑），
 # 该试验值写在 .env 里，由消融实验去验证它到底该取几。
+# 注意：reranker 返回的是 logits（实测 -0.85 ~ -7.32），这个绝对阈值实际几乎不触发，
+# 真正起作用的是 RERANK_GAP_RATIO —— 做消融时别只盯 gap_abs。
 DEFAULT_RERANK_GAP_ABS = 2.0
+
+# ------------------------------------------------- 联网检索参与方式（三态）
+# 为什么需要这个开关
+# ----------------
+# 改造前 web_search_docs 与本地条款切片被混进同一个 rerank 池统一打分，
+# 但两者量纲与可信度都不同：bge-reranker 对「网页标题 + 营销文风」系统性给正分
+# （实测 +2.59 / +3.49 / +3.81），对规范条款句式给负 logits（实测 -0.85 ~ -7.32），
+# 于是联网软文稳定占据 top1，再叠加断崖 TopK 把本地切片清零 ——
+# 模型最终拿一段互联网营销文案当条款依据，答出与条款原文相悖、且引用编号伪造的结论。
+# 保险条款合规问答要求「以条款原文为唯一依据」，因此默认行为必须是：
+# 本地条款命中时，联网结果一律不进上下文。
+#
+# 三态取值
+# --------
+#   off       完全不发起联网检索（最省，也最隔绝外网不确定性）
+#   fallback  照常检索，但只有当本地条款一条都没命中时才拿它兜底（默认）
+#   always    与本地结果一起进上下文（改造前行为，仅留给消融做对照）
+DEFAULT_WEB_SEARCH_MODE = "fallback"
+VALID_WEB_SEARCH_MODES = ("off", "fallback", "always")
+# fallback / always 模式下，联网结果最多带进上下文几条。
+# 取 2 是因为它只承担「条款库没有的周边信息」这一窄职责，不需要更多。
+DEFAULT_WEB_MAX_TOPK = 2
 
 
 # ------------------------------------------------------------ 解析工具
@@ -80,6 +104,21 @@ def _parse_bool(raw, default, name):
         return False
     logger.warning(f"环境变量 {name} 取值无法识别（原值 {raw!r}），回落默认值 {default}")
     return default
+
+
+def _parse_enum(raw, default, name, allowed):
+    """解析枚举配置（如 WEB_SEARCH_MODE）。
+
+    非法取值一律回落默认值并告警，不做「猜你想写的是哪个」的模糊匹配 ——
+    拼错的开关必须被看见，否则会静默退回默认行为，让消融结论对不上号。
+    """
+    if raw is None or str(raw).strip() == "":
+        return default
+    text = str(raw).strip().lower()
+    if text not in allowed:
+        logger.warning(f"环境变量 {name} 取值必须是 {allowed} 之一（实得 {raw!r}），回落默认值 {default}")
+        return default
+    return text
 
 
 def _parse_weights(raw, default, name="RANKER_WEIGHTS"):
@@ -123,6 +162,9 @@ class RetrievalConfig:
     rerank_min_topk: int
     rerank_gap_ratio: float
     rerank_gap_abs: float
+    # 联网检索参与方式：off / fallback / always，见文件顶部说明
+    web_search_mode: str
+    web_max_topk: int
 
     def as_dict(self) -> dict:
         """转成可 JSON 序列化的字典，供评测脚本落盘记录本轮配置。"""
@@ -139,6 +181,8 @@ class RetrievalConfig:
             f"_gapabs{self.rerank_gap_abs:g}"
             f"_gapratio{self.rerank_gap_ratio:g}"
             f"_lim{self.retrieval_limit}"
+            f"_web{self.web_search_mode}"
+            f"_webmax{self.web_max_topk}"
         )
 
 
@@ -151,6 +195,8 @@ retrieval_config = RetrievalConfig(
     rerank_min_topk=_parse_int(os.getenv("RERANK_MIN_TOPK"), DEFAULT_RERANK_MIN_TOPK, "RERANK_MIN_TOPK"),
     rerank_gap_ratio=_parse_float(os.getenv("RERANK_GAP_RATIO"), DEFAULT_RERANK_GAP_RATIO, "RERANK_GAP_RATIO"),
     rerank_gap_abs=_parse_float(os.getenv("RERANK_GAP_ABS"), DEFAULT_RERANK_GAP_ABS, "RERANK_GAP_ABS"),
+    web_search_mode=_parse_enum(os.getenv("WEB_SEARCH_MODE"), DEFAULT_WEB_SEARCH_MODE, "WEB_SEARCH_MODE", VALID_WEB_SEARCH_MODES),
+    web_max_topk=_parse_int(os.getenv("WEB_MAX_TOPK"), DEFAULT_WEB_MAX_TOPK, "WEB_MAX_TOPK"),
 )
 
 # 导入即打印生效值：消融跑分日志里必须能直接看到这轮用的什么配置

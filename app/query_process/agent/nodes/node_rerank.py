@@ -16,6 +16,10 @@ RERANK_MIN_TOPK: int = retrieval_config.rerank_min_topk
 RERANK_GAP_RATIO: float = retrieval_config.rerank_gap_ratio
 # 断崖阈值（绝对）
 RERANK_GAP_ABS: float = retrieval_config.rerank_gap_abs
+# 联网结果最多带进上下文几条
+RERANK_WEB_MAX_TOPK: int = retrieval_config.web_max_topk
+# 联网检索参与方式：off / fallback / always
+WEB_SEARCH_MODE: str = retrieval_config.web_search_mode
 
 @step_log("step_1_merge_docs")
 def step_1_merge_docs(state):
@@ -42,6 +46,9 @@ def step_1_merge_docs(state):
         # 展示用标题：优先条款小标题，缺失时退化为层级路径，再退化为产品名
         title = entity.get("clause_title") or entity.get("clause_path") or entity.get("item_name")
         # 将数据转为固定的结构并存储到doc_items
+        # clause_no / clause_path / clause_type 必须一路带到 answer_output：
+        # prompt 硬性规则要求「每处结论紧跟 ⟨条款号⟩」，而条款号只有在上下文里出现，
+        # 模型才可能照抄而不是自己编号（此前这里把它们丢了，模型只能编出「第二条」）。
         doc_items.append(
             {
                 "text": content,
@@ -49,7 +56,11 @@ def step_1_merge_docs(state):
                 "doc_id": doc_id,
                 "pk": pk,
                 "url": "",
-                "source": "local"
+                "source": "local",
+                "clause_no": entity.get("clause_no") or "",
+                "clause_path": entity.get("clause_path") or "",
+                "clause_type": entity.get("clause_type") or "",
+                "item_name": entity.get("item_name") or "",
             }
         )
     # 遍历web_search_docs，将其中的数据转换为固定的格式
@@ -59,6 +70,7 @@ def step_1_merge_docs(state):
         title = (doc.get("title") or "").strip()
         url = (doc.get("url") or "").strip()
         # 使用固定的格式存储数据
+        # 联网结果没有条款号，显式留空 —— 下游据此判断「这条不能作为条款出处」
         doc_items.append(
             {
                 "text": snippet,
@@ -66,7 +78,11 @@ def step_1_merge_docs(state):
                 "doc_id": "",
                 "pk": "",
                 "url": url,
-                "source": "web"
+                "source": "web",
+                "clause_no": "",
+                "clause_path": "",
+                "clause_type": "",
+                "item_name": "",
             }
         )
     return doc_items
@@ -91,17 +107,12 @@ def step_2_rerank_docs(state, doc_items):
         scored_docs = []
         # 将scores、texts、doc_items进行压缩且遍历
         for score, text, item in zip(scores, texts, doc_items):
-            scored_docs.append(
-                {
-                    "text": text,
-                    "score": float(score),
-                    "doc_id": item["doc_id"],
-                    "pk": item["pk"],
-                    "url": item["url"],
-                    "title": item["title"],
-                    "source": item["source"]
-                }
-            )
+            # 用 dict(item) 整体转发而不是逐字段白名单重列：
+            # 白名单正是 clause_no 被丢掉的成因，新增字段不该再靠人记得补一行。
+            record = dict(item)
+            record["text"] = text
+            record["score"] = float(score)
+            scored_docs.append(record)
         # 将最终的结果进行排序
         scored_docs.sort(key=lambda doc: doc["score"], reverse=True)
         return scored_docs
@@ -113,33 +124,82 @@ def step_2_rerank_docs(state, doc_items):
 
 @step_log("step_3_topk")
 def step_3_topk(scored_docs):
+    # 本地条款与联网结果**分开**做 TopK。
+    # 为什么不能混在一起：两者出自同一个 reranker，但量纲和可信度都不同 ——
+    # 网页文本（标题 + 营销文风）与 query 的表面重合度高，实测稳定拿正分（+2.59~+3.81），
+    # 而规范条款句式（"本合同…""您…我们…"）实测拿负 logits（-0.85~-7.32）。
+    # 混池排序的结果是联网软文恒定占 top1，本地条款被断崖清零 —— 直接摧毁答案的正确性。
+    local_docs = [doc for doc in scored_docs if doc.get("source") != "web"]
+    web_docs = [doc for doc in scored_docs if doc.get("source") == "web"]
+    # 本地组照旧走断崖动态 TopK
+    local_top = _cut_by_cliff(local_docs)
+
+    # off：联网结果完全不进上下文
+    if WEB_SEARCH_MODE == "off":
+        return local_top
+    # always：改造前的行为，联网结果跟在本地之后（仅留给消融做对照）
+    if WEB_SEARCH_MODE == "always":
+        return local_top + web_docs[:RERANK_WEB_MAX_TOPK]
+    # fallback（默认）：本地条款命中时联网结果一律不进上下文；
+    # 只有本地一条都没命中，才拿它兜底，避免营销软文被当成条款依据。
+    if local_top:
+        return local_top
+    return web_docs[:RERANK_WEB_MAX_TOPK]
+
+
+def _normalize_scores(scores):
+    """把一组原始打分线性压到 [0, 1]，供断崖的**相对**判据使用。
+
+    为什么必须归一化：相对落差 gap / |score1| 只有在同尺度上才有意义，
+    而 bge-reranker 返回的是 **logits**（实测 -0.85 ~ -7.32），
+    对负数取绝对值 = 拿「离零的距离」当分母，落差被系统性放大。
+    实测 top1→top2 的 gap=1.2166、rel 算出来 0.982（阈值 0.5），
+    于是断崖在第 1 个位置就触发，topk 被砍到 1。
+    先归一化再算相对落差，判据才与「分数落在 [0,1]」时代的语义一致。
+    """
+    if not scores:
+        return []
+    lo, hi = min(scores), max(scores)
+    span = hi - lo
+    # 全等：没有落差可言 → 返回全 1，使所有 gap 判据失效（等价于「不断崖」）
+    if span <= 1e-9:
+        return [1.0] * len(scores)
+    return [(score - lo) / span for score in scores]
+
+
+def _cut_by_cliff(docs):
+    """对**单组**已按分数降序的文档做断崖式动态 TopK。
+
+    两个判据刻意用不同的度量空间，这是修 bug 时定下的：
+      - 绝对判据 `RERANK_GAP_ABS` 用**原始**落差 —— 「差 2 分」这件事只有在模型原生
+        打分尺度上才有意义（.env 现值 2 就是按这个尺度定的）；
+      - 相对判据 `RERANK_GAP_RATIO` 用**归一化**落差 —— 「跌了一半」必须同尺度才可比，
+        原始 logits 带负号时 gap / |score1| 会被系统性放大（这才是原缺陷所在）。
+    """
+    total = len(docs)
+    if total == 0:
+        return []
     # 硬上限：最多取前10条，取全局常量与实际文档数的较小值（避免索引越界）
     # 注：max_topk从全局常量读取，不依赖外部状态，保证逻辑一致性
-    max_topk = min(RERANK_MAX_TOPK, len(scored_docs))
-    min_topk = RERANK_MIN_TOPK  # 硬下限：至少保留的文档数量（全局常量配置）
-    gap_ratio = RERANK_GAP_RATIO  # 相对断崖阈值：分数下降的相对比例阈值（全局常量配置）
-    gap_abs = RERANK_GAP_ABS  # 绝对断崖阈值：分数下降的绝对差值阈值（全局常量配置）
-    # 创建表示真正动态topk的变量
+    max_topk = min(RERANK_MAX_TOPK, total)
+    # 硬下限：至少保留的文档数量，且不能超过硬上限
+    min_topk = max(1, min(RERANK_MIN_TOPK, max_topk))
+    raw_scores = [doc["score"] for doc in docs]
+    # 相对判据用的归一化分数，消除 logits 负号的干扰
+    norm_scores = _normalize_scores(raw_scores)
     topk = max_topk
-    # 判断现有的数据是否能够满足硬下限
-    # 若能够满足，则获取动态的上限
-    # 若无法满足，则提供现有的所有数据
     if topk > min_topk:
-        # 循环遍历相邻的数据的分数差以及分数差比例
         for i in range(min_topk - 1, topk - 1):
-            # 分别获取相邻的数据的分数
-            score1 = scored_docs[i]["score"]
-            score2 = scored_docs[i + 1]["score"]
-            # 分别获取分数差值和分数差值的比例
-            gap = score1 - score2
-            rel = gap / (abs(score1) + 1e-6)
-            # 判断分数差值和分数差值的比例是否大于等于绝对断崖阈值和相对断崖阈值
-            if gap >= gap_abs or rel >= gap_ratio:
+            # 绝对落差：模型原生打分尺度
+            gap_abs = raw_scores[i] - raw_scores[i + 1]
+            # 相对落差：归一化尺度，避免负数被 abs() 放大
+            gap_norm = norm_scores[i] - norm_scores[i + 1]
+            rel = gap_norm / (abs(norm_scores[i]) + 1e-6)
+            if gap_abs >= RERANK_GAP_ABS or rel >= RERANK_GAP_RATIO:
                 # 获取动态的topk
                 topk = i + 1
                 break
-    scored_docs = scored_docs[:topk]
-    return scored_docs
+    return docs[:topk]
 
 
 

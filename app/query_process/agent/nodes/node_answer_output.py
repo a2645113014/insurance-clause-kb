@@ -38,23 +38,40 @@ def step_2_construct_prompt(state: QueryGraphState):
     history_list = state.get("history")
     """
     将reranked_docs中的数据转换为以下格式：
-    "[1] [local] [pk=01_xxx.pdf_6.2_1] [score=0.95] [title=责任免除]
+    "[1] [local] [条款号=6.2] [pk=01_xxx.pdf_6.2_1] [score=0.95] [title=责任免除]
      这里是条款的正文内容..."
+    条款号必须出现在这里：prompt 硬性规则 1 要求每处结论紧跟 ⟨条款号⟩，
+    上下文不提供条款号，模型就只能自己编号（实测编出过「第二条」，真实是 2.3）。
     """
     # 处理上下文，创建存储处理之后的结果的列表
     docs = []
     # 创建记录最大字符数的变量
     used = 0
+    # 联网兜底结果进入上下文时插一条显式标注。
+    # 为什么要标注：这条内容来自互联网（实测会被检回营销软文），不是条款原文，
+    # 不加标注模型会把它当条款依据，答出与原文相悖、引用编号还是伪造的结论。
+    web_banner = "[注意：以下条目来自互联网检索，非条款原文，只能作线索，不得作为条款依据引用]"
+    web_banner_done = False
     # 对reranked_docs进行遍历
     for num, chunk in enumerate(reranked_docs, start=1):
         # 从chunk中获取所需要的数据，并存储到列表中
         text = chunk.get("text")
         if not text:
             continue
+        # 联网结果第一次出现时插入标注（node_rerank 已保证本地条款在前、联网在后）
+        if chunk.get("source") == "web" and not web_banner_done:
+            web_banner_done = True
+            docs.append(web_banner)
+            used += len(web_banner) + 2
         data_list = [f"[{num}]"]
         source = chunk.get("source")
         if source:
             data_list.append(f"[{source}]")
+        # 条款号紧跟在来源之后：它是模型引用时的唯一合法取值，
+        # 联网条目没有条款号，此字段留空即可（模型据「无条款号」判断不能作条款出处）
+        clause_no = chunk.get("clause_no")
+        if clause_no:
+            data_list.append(f"[条款号={clause_no}]")
         # 引用标记用切片主键 pk（与 02_clause_schema.json 对齐），供前端回溯到具体条款切片
         pk = chunk.get("pk")
         if pk:

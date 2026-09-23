@@ -4,7 +4,9 @@ import json
 from agents.mcp import MCPServerStreamableHttp
 
 from app.conf.bailian_mcp_config import mcp_config
-from app.core.logger import node_log
+# 联网检索是否发起由检索层配置面板统一决定：off 时连 MCP 都不连
+from app.conf.retrieval_config import retrieval_config
+from app.core.logger import node_log, logger
 from app.query_process.agent.state import QueryGraphState
 from app.utils.task_utils import add_running_task, add_done_task
 
@@ -39,8 +41,11 @@ def node_web_search_mcp(state: QueryGraphState):
     rewritten_query = state["rewritten_query"]
     # 创建存储最终结果的列表
     results = []
+    if retrieval_config.web_search_mode == "off":
+        # 联网检索关闭：直接返回空，连 MCP 都不发起（省一次外网往返，也隔绝外网不确定性）
+        logger.info("[node_web_search_mcp] web_search_mode=off，跳过联网检索")
     # 判断rewritten_query是否为空
-    if rewritten_query:
+    elif rewritten_query:
         # 异步调用MCP服务
         result = asyncio.run(mcp_call_streamable(rewritten_query))
         # 获取网络搜索的结果主要数据
