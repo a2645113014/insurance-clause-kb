@@ -18,6 +18,10 @@ class QueryGraphState(TypedDict):
     rrf_chunks: list  # RRF 融合排序后的切片
     reranked_docs: list  # 重排序后的最终 Top-K 文档
 
+    # 规则层数据（Phase 2.3）：理赔材料 / 理赔时限走 MongoDB 确定性查询，不走检索
+    rule_tool_result: dict  # 规则工具的原始返回，供调试与溯源
+    rule_context: str  # 规则结果转成的文本，由 node_answer_output 拼进 context
+
     # 生成过程中的数据
     prompt: str  # 组装好的 Prompt
     answer: str  # 最终生成的答案
@@ -40,6 +44,8 @@ query_graph_default_state: QueryGraphState = {
     "web_search_docs": [],
     "rrf_chunks": [],
     "reranked_docs": [],
+    "rule_tool_result": {},
+    "rule_context": "",
     "prompt": "",
     "answer": "",
     "item_names": [],

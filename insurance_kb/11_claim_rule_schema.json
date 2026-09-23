@@ -1,0 +1,77 @@
+{
+  "version": "1.0",
+  "created": "2026-09-23",
+  "description": "理赔规则集合 insurance_rules 的字段定义与索引设计（Phase 2.3 规则层工具化的数据契约）。",
+  "storage": {
+    "engine": "mongodb",
+    "db_env_key": "MONGO_DB_NAME",
+    "collection_env_key": "RULE_COLLECTION",
+    "collection_default": "insurance_rules",
+    "unique_key": "_id（等于 rule_id，幂等 upsert 的依据）",
+    "why_not_milvus": "理赔规则要的是确定性键值查询（按产品 + 事故类型取材料清单），不是相似度检索。放进向量库会把一个可精确回答的问题变成概率问题 —— 见 01_改造清单.md §2.1。"
+  },
+  "rule_types": {
+    "required_docs": {
+      "description": "理赔材料清单：按产品 + 事故类型回答「申请保险金需要哪些证明和资料」。",
+      "source_clause_type": "保险金申请",
+      "source_clause_count": 18,
+      "coverage": "14 / 17 款产品",
+      "extract_method": "llm",
+      "why_llm": "条款表述不统一。太保系写「XX保险金申请所需的证明和资料」，正则可抽；中英人寿 7 条表述不同，正则全抽不出（实测覆盖仅 11/18）。故材料清单走 LLM 抽取。",
+      "missing_products": ["太保阿基米德（2025）重大疾病保险（互联网）", "太保福有余（2025）终身寿险（互联网）", "中英人寿福临门养老年金保险"],
+      "missing_products_handling": "工具层降级：按 insurance_type 取同类产品的通用材料，并在返回值里标注 matched_by='insurance_type'，由 Prompt 提示用户「该产品条款未单列，以下为同类产品通用要求」。"
+    },
+    "claim_timeline": {
+      "description": "理赔时限：核定期限 / 复杂案件核定期限 / 给付期限 / 拒赔通知期限。",
+      "source_clause_type": "保险金给付",
+      "source_clause_count": 18,
+      "coverage": "17 / 17 款产品",
+      "extract_method": "regex",
+      "why_regex": "这是《保险法》第 23 条的法定标准，各产品表述高度一致，实测正则覆盖 17/18（唯一漏网的是被误分类到「保险金给付」的乐享无忧 2.5 条，非时限条款）。正则比 LLM 更准且零成本。",
+      "observed_distribution": [
+        {"settle": "5工作日", "settle_complex": "30日", "pay": "10日", "reject_notice": "1工作日", "count": 9, "belongs_to": "太保系"},
+        {"settle": null, "settle_complex": "30日", "pay": "10日", "reject_notice": null, "count": 7, "belongs_to": "中英人寿系"}
+      ]
+    }
+  },
+  "fields": {
+    "common": {
+      "_id": {"type": "string", "required": true, "note": "等于 rule_id。业务唯一键，幂等 upsert 靠它。"},
+      "rule_id": {"type": "string", "required": true, "note": "构造规则：{item_name}|{rule_type} 或 {item_name}|{rule_type}|{accident_type}"},
+      "rule_type": {"type": "string", "required": true, "enum_ref": "rule_types"},
+      "item_name": {"type": "string", "required": true, "note": "产品名称。与 insurance_clauses.item_name 同源，工具的第一查询键。"},
+      "insurance_type": {"type": "string", "required": false, "note": "险种。工具的第二查询键，产品级查不到时降级使用。"},
+      "product_code": {"type": "string", "required": false},
+      "company": {"type": "string", "required": false},
+      "source_clause_no": {"type": "string", "required": true, "note": "条款号原文（如 3.3 / 6.4），答案引用时展示给用户。"},
+      "source_pk": {"type": "string", "required": true, "note": "回指 insurance_clauses 的 pk，可溯源到原文切片。"},
+      "source_span": {"type": "string", "required": true, "note": "抽取所依据的原文片段。必须逐字出现在 source_pk 对应切片的 text 中，否则 verified=false。"},
+      "extract_method": {"type": "string", "required": true, "enum": ["llm", "regex", "manual"]},
+      "verified": {"type": "boolean", "required": true, "note": "source_span 是否通过逐字校验（反幻觉门）。"},
+      "schema_version": {"type": "string", "required": true},
+      "created_at": {"type": "string", "required": true, "note": "ISO8601"}
+    },
+    "required_docs": {
+      "accident_type": {"type": "string", "required": true, "note": "事故类型，即条款原文里「XX保险金」的 XX，如「身故保险金」「满期保险金」。保留原文表述，不做同义归并 —— 保真优先，归并放工具层。"},
+      "docs": {"type": "array[string]", "required": true, "note": "材料清单。逐条保留条款原文表述，不概括、不翻译。"},
+      "docs_count": {"type": "int", "required": true, "note": "冗余字段，便于抽检与统计。"}
+    },
+    "claim_timeline": {
+      "settle_value": {"type": "int|null", "note": "核定期限数值"},
+      "settle_unit": {"type": "string|null", "enum": ["workday", "day"], "note": "单位。工作日与自然日必须区分 —— 混用会算错。"},
+      "settle_complex_value": {"type": "int|null", "note": "情形复杂时的核定期限数值"},
+      "settle_complex_unit": {"type": "string|null", "enum": ["workday", "day"]},
+      "pay_value": {"type": "int|null", "note": "达成给付协议后的给付期限数值"},
+      "pay_unit": {"type": "string|null", "enum": ["workday", "day"]},
+      "reject_notice_value": {"type": "int|null", "note": "拒赔通知期限数值"},
+      "reject_notice_unit": {"type": "string|null", "enum": ["workday", "day"]}
+    }
+  },
+  "indexes": [
+    {"name": "idx_item_ruletype", "fields": [["item_name", 1], ["rule_type", 1]]},
+    {"name": "idx_item_ruletype_accident", "fields": [["item_name", 1], ["rule_type", 1], ["accident_type", 1]]},
+    {"name": "idx_intype_ruletype_accident", "fields": [["insurance_type", 1], ["rule_type", 1], ["accident_type", 1]], "note": "险种级 fallback 查询用"},
+    {"name": "idx_source_pk", "fields": [["source_pk", 1]], "note": "溯源反查：从规则回到原文切片"}
+  ],
+  "index_note": "_id 天然唯一，无需另建唯一索引。建索引前先确认集合为空或存量数据已清理。"
+}

@@ -75,7 +75,18 @@ def step_2_construct_prompt(state: QueryGraphState):
         # 记录本次循环的字节数
         used += len(doc) + 2
     # 将每条数据转换的结果拼接为字符串
-    context = "\n\n".join(docs) if docs else "无参考内容"
+    docs_context = "\n\n".join(docs) if docs else ""
+    # 规则层结果（Phase 2.3）：理赔材料 / 理赔时限走 MongoDB 确定性查询，
+    # 它比向量检索更权威（一份清单对应一款产品，不会串产品），
+    # 因此放在 context 最前面，让模型优先采用。
+    # 规则分支下 reranked_docs 为空，此时 context 就只有规则结果。
+    rule_context = state.get("rule_context") or ""
+    sections = []
+    if rule_context:
+        sections.append(f"【理赔规则查询结果（确定性查询，可直接引用条款号）】\n{rule_context}")
+    if docs_context:
+        sections.append(docs_context)
+    context = "\n\n".join(sections) if sections else "无参考内容"
     """
     将历史对话转换为以下格式：
     用户: xxx
