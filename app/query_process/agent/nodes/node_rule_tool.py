@@ -166,8 +166,13 @@ def _fmt_docs(res):
 
     lines = []
     for e in res["entries"]:
+        # 部分匹配必须显式标出来。典型场景：「身故」会子串命中
+        # 「投保人身故保险费豁免」，而那是投保人的责任、不是被保险人 ——
+        # 不标注的话模型会把第一条当成用户问的那条。排序已把精确匹配提前，
+        # 标注负责让模型知道后面那些条目「为什么在这里」。
+        tag = "（部分匹配，责任主体可能不同）" if e.get("match_quality") == "partial" else ""
         lines.append(
-            f"事故类型：{e['accident_type']}"
+            f"事故类型：{e['accident_type']}{tag}"
             f"（依据条款 {e['source_clause_no']}，来源产品：{e['source_item_name']}）"
         )
         for i, d in enumerate(e["docs"], 1):

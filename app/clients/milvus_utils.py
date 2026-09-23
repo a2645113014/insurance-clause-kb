@@ -122,7 +122,7 @@ def fetch_chunks_by_pks(
 
 
 def create_hybrid_search_requests(dense_vector, sparse_vector, dense_params=None, sparse_params=None, expr=None,
-                                  limit=5):
+                                  limit=5, dense_field="vector", sparse_field="sparse"):
     """
     构建Milvus混合搜索请求对象
     分别创建稠密/稀疏向量的搜索请求，用于后续混合搜索融合
@@ -132,7 +132,16 @@ def create_hybrid_search_requests(dense_vector, sparse_vector, dense_params=None
     :param sparse_params: 稀疏向量搜索参数，默认使用内积相似度
     :param expr: 搜索过滤表达式，用于精准筛选数据
     :param limit: 单向量搜索返回结果数量，默认5
+    :param dense_field: 稠密向量字段名。默认 "vector"，对齐条款库 insurance_clauses 的
+        schema（见 insurance_kb/02_clause_schema.json，改造时由 dense_vector 统一改名而来）
+    :param sparse_field: 稀疏向量字段名。默认 "sparse"，原因同 dense_field
     :return: 搜索请求列表，包含[dense_req, sparse_req]
+
+    ⚠️ 字段名按集合而异，调用前务必确认目标集合的真实 schema：
+       - insurance_clauses      → vector / sparse        （术语条款库，27 字段新 schema）
+       - insurance_item_names   → dense_vector / sparse_vector（产品名索引，沿用旧集合命名）
+    传错字段名不会退化为空结果，而是直接抛 MilvusException(code=1100,
+    "failed to get field schema by name")，整条检索必然失败。
     """
     # 稠密向量默认搜索参数：余弦相似度（COSINE），适配BGE-M3稠密向量并与建库参数保持一致
     if dense_params is None:
@@ -141,19 +150,19 @@ def create_hybrid_search_requests(dense_vector, sparse_vector, dense_params=None
     if sparse_params is None:
         sparse_params = {"metric_type": "IP"}
 
-    # 构建稠密向量搜索请求，关联Milvus的vector字段（字段名与 02_clause_schema.json 对齐） 近似最近邻（ANN）检索请求的核心类
+    # 构建稠密向量搜索请求（字段名由调用方指定） 近似最近邻（ANN）检索请求的核心类
     dense_req = AnnSearchRequest(
         data=[dense_vector],
-        anns_field="vector",
+        anns_field=dense_field,
         param=dense_params,
         expr=expr,
         limit=limit
     )
 
-    # 构建稀疏向量搜索请求，关联Milvus的sparse字段
+    # 构建稀疏向量搜索请求（字段名由调用方指定）
     sparse_req = AnnSearchRequest(
         data=[sparse_vector],
-        anns_field="sparse",
+        anns_field=sparse_field,
         param=sparse_params,
         expr=expr,
         limit=limit

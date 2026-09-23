@@ -3,21 +3,35 @@
 做两件事
 --------
 1. `claim_timeline`：从「保险金给付」条款抽理赔时限（正则，覆盖 17/18）
-2. `required_docs` ：从「保险金申请」条款抽材料清单（正则，覆盖 18/18）
+2. `required_docs` ：从材料条款抽材料清单（正则，覆盖 17/17 款产品）
 
 为什么最终全用正则，而不是 LLM 抽材料清单
 ------------------------------------------
 最初的设计是「时限走正则、材料走 LLM」，理由是材料清单各家表述不同。实际探底后
 发现**表述差异只有三种，都能写成正则**（见 TITLE_PATTERNS），加上按 clause_no
-把被切散的片拼回来，覆盖率达到 18/18：
+把被切散的片拼回来，即可全覆盖：
 
     太保系   生存保险金申请所需的证明和资料
     乐享系   3.3.1一般医疗费用保险金的申请
     中英系   1、申请身故保险金时
 
-既然规则能做到 100% 覆盖且逐字可溯，就没有理由引入 LLM 的额外不确定性
+既然规则能做到全覆盖且逐字可溯，就没有理由引入 LLM 的额外不确定性
 （幻觉风险、调用成本、外部依赖）。`insurance_kb/07_prompts_v2/claim_docs_extract.prompt`
 保留下来，供后续 0.6B 微调做条款要素抽取时复用 —— 但构建规则表这一步不需要它。
+
+⚠️ 2026-09-23 修正：不要按 clause_type 过滤取池
+---------------------------------------------
+第一版的取池条件是 `clause_type == "保险金申请"`（18 片，覆盖 14/17 款产品）。
+这个条件是错的 —— 材料条款的 clause_type 标签本身就不准：
+「保险金及保险费豁免申请」被打成 `保险费`、「如何申请保险金」被打成 `其他`。
+于是 3 款产品的材料清单虽然写着，却因为取不到而只能靠险种级降级或直接拒答：
+
+    太保福有余（2025）终身寿险   3.3  type=保险费  漏抽
+    太保阿基米德（2025）重大疾病   3.3  type=保险费  漏抽
+    中英人寿福临门养老年金保险    6.3  type=其他    漏抽
+
+改为**全量取池 + 材料形态门**后：规则 43 → 50 条，覆盖 14/17 → 17/17，
+且原有 43 条逐字不变（零回归）。过滤职责由正则承担，见 MATERIAL_GUARD。
 
 两个必须处理的语料事实
 ----------------------
@@ -85,7 +99,7 @@ def norm_ws(text):
 
 
 # ============================================================ 材料清单：标题识别
-# 三种标题写法，实测覆盖 18/18 条「保险金申请」条款。
+# 三种标题写法。配合全量取池 + MATERIAL_GUARD，实测覆盖 17/17 款产品。
 # 每条正则的捕获组即事故类型（如「身故保险金」）。
 TITLE_PATTERNS = [
     # 太保系：生存保险金申请所需的证明和资料
@@ -113,6 +127,19 @@ ACC_PREFIX_RE = re.compile(r"^\d+(?:\.\d+){0,3}")
 # 于是「满期保险金」的清单里出现了「死亡证明」——会给出错误的合规答案。
 # 这类段落必须整条丢弃，不能靠猜顺序去修：修完 span 就不再逐字来自原文，溯源断掉。
 BROKEN_TITLE_RE = re.compile(r"保险金申(?=.{1,60}?请所需的证明和资料)")
+
+# 材料形态门（2026-09-23 新增）。全量取池后必须有这道门，否则会抽到假材料。
+#
+# 背景：条款里除了「申请材料清单」，还有别的段落也长得像清单 ——
+# 例如乐享无忧 3.5/3.6「恶性肿瘤特定药品费用保险金的申请」，
+# 正文写的是「购药资格理赔审核通过后…」，被模式的 (1)(2) 编号捞出来就是
+# 「项和第」「项外的全部材料」这类垃圾。而它的 accident_type 又和 3.3 的
+# 真清单同名，会在 (item_name, accident_type) 这个业务主键上**覆盖掉正确答案**。
+#
+# 判据：全库实测，条款里的申请材料清单**恒以「保险合同」开头**（其次可能是
+# 保险单/投保单）。这不是拍脑袋的启发式，而是理赔条款的行文惯例：
+# 索赔材料第一项永远是保单本身。
+MATERIAL_GUARD = re.compile(r"^(保险合同|保险单|投保单)")
 
 
 def clean_accident_type(raw):
@@ -194,6 +221,18 @@ def build_docs_rules(merged, method="regex"):
                 "clause_no": merged.get("clause_no"),
             })
             continue
+
+        # 材料形态门：首条必须是保单类凭证。挡掉「…的申请」模式在非材料段落上的误命中，
+        # 这类误命中会以相同的 accident_type 覆盖掉真清单，比漏抽更危险。
+        if not MATERIAL_GUARD.match(docs[0]):
+            rejected.append({
+                "item_name": merged.get("item_name"),
+                "accident_type": acc,
+                "reason": f"材料形态门未通过：首条不是保单类凭证（{docs[0][:40]}）",
+                "clause_no": merged.get("clause_no"),
+            })
+            continue
+
         if not verify_span(span, flat):
             rejected.append({
                 "item_name": merged.get("item_name"),
@@ -366,19 +405,32 @@ def group_by_clause(rows):
     return merged
 
 
-def pull_clauses(client, clause_type):
-    """从 Milvus 拉指定 clause_type 的全部条款。
+def pull_clauses(client, clause_type=None):
+    """从 Milvus 拉条款。clause_type 传 None 表示**不限类型，全量拉取**。
+
+    ⚠️ 为什么材料抽取必须全量拉、不能按 clause_type 过滤（2026-09-23 修正）：
+    材料清单所在条款的 clause_type 标签并不可靠 —— 实测「保险金及保险费豁免申请」
+    被打成 `保险费`、「如何申请保险金」被打成 `其他`。按 `clause_type == "保险金申请"`
+    过滤会**静默漏掉 3 款产品**（太保福有余终身寿险 / 太保阿基米德重疾 /
+    中英福临门养老年金），它们明明在条款里写全了材料清单，却只能靠险种级降级
+    或直接拒答。改为全量取池、让标题正则自己裁决后覆盖率 14/17 → 17/17。
+    代价是池子从 18 片涨到 966 片 —— 但过滤动作由正则承担，见 MATERIAL_GUARD。
 
     ⚠️ Milvus query 的 limit 上限是 16384，写 20000 会直接报
     `invalid max query result window`。
     """
-    return client.query(
+    kwargs = dict(
         collection_name=milvus_config.chunks_collection,
-        filter=f'clause_type == "{clause_type}"',
         output_fields=FIELDS,
         limit=16384,
         consistency_level="Strong",
     )
+    if clause_type:
+        kwargs["filter"] = f'clause_type == "{clause_type}"'
+    else:
+        # 空 filter 必须带 limit，否则 Milvus 拒绝执行
+        kwargs["filter"] = ""
+    return client.query(**kwargs)
 
 
 # ============================================================ 主流程
@@ -425,12 +477,17 @@ def main():
 
     # ---------------- required_docs ----------------
     if args.only in (None, "docs"):
-        raw_rows = pull_clauses(client, "保险金申请")
+        # 全量取池，不按 clause_type 过滤 —— 材料条款的 clause_type 标签不可靠，
+        # 过滤会静默漏产品。裁决交给 TITLE_PATTERNS + MATERIAL_GUARD。
+        raw_rows = pull_clauses(client)
         merged = group_by_clause(raw_rows)
-        logger.info(f"拉取「保险金申请」{len(raw_rows)} 片 → 聚合为 {len(merged)} 条完整条款")
+        logger.info(f"全量拉取 {len(raw_rows)} 片 → 聚合为 {len(merged)} 条完整条款")
         built, no_title, no_docs = [], [], []
         for m in merged:
             rules, rej = build_docs_rules(m)
+            # rej 必须逐条收进循环内 —— 写在循环外只会拿到最后一次迭代的空列表，
+            # 丢弃记录（串行错乱 / 形态门 / span 校验失败）会全部静默丢失
+            rejected.extend(rej)
             if rules:
                 built.extend(rules)
                 title_hint = "+".join(r["accident_type"] for r in rules)
@@ -440,15 +497,18 @@ def main():
                 (no_title if not find_titles(m["text"]) else no_docs).append(
                     {"item_name": m["item_name"], "clause_no": m["clause_no"],
                      "chunk_count": m["chunk_count"]})
-            rejected.extend(rej)
         all_rules.extend(built)
-        notes.append(f"required_docs：源 {len(raw_rows)} 片 → 聚合 {len(merged)} 条条款 "
+        notes.append(f"required_docs：源 {len(raw_rows)} 片（全量）→ 聚合 {len(merged)} 条条款 "
                      f"→ 规则 {len(built)} 条；无标题 {len(no_title)} 条，"
                      f"有标题无材料 {len(no_docs)} 条，质检丢弃 {len(rejected)} 条")
-        if no_title:
-            notes.append(f"  无标题：{[x['item_name'] for x in no_title]}")
+        # 全量取池后「无标题」必然占绝大多数（绝大多数条款与理赔材料无关），
+        # 只报数不铺清单，避免日志被 800 多行淹没
         if no_docs:
-            notes.append(f"  有标题无材料：{[x['item_name'] for x in no_docs]}")
+            notes.append(f"  有标题无材料（需人工看）：{[x['item_name'] for x in no_docs]}")
+        gate_rej = [x for x in rejected if "形态门" in (x.get("reason") or "")]
+        if gate_rej:
+            notes.append(f"  形态门拦下 {len(gate_rej)} 条："
+                         f"{[(x['item_name'], x['accident_type']) for x in gate_rej]}")
         # 每款产品覆盖的事故类型数，一眼看出谁的条款更细
         per_product = Counter(r["item_name"] for r in built)
         notes.append(f"  材料清单覆盖 {len(per_product)} 款产品，"

@@ -115,11 +115,65 @@ def _entry(row):
         "accident_type": row.get("accident_type"),
         "docs": row.get("docs") or [],
         "docs_count": row.get("docs_count"),
+        "match_quality": row.get("_match_quality") or "exact",
         "source_item_name": row.get("item_name"),
         "source_clause_no": row.get("source_clause_no"),
         "source_pk": row.get("source_pk"),
         "source_span": row.get("source_span"),
     }
+
+
+# 命中质量分级。必须分级的原因：「身故」是「投保人身故保险费豁免」的子串，
+# 纯子串匹配会把**投保人**身故的豁免材料排在**被保险人**身故保险金的前面 ——
+# 两者责任主体不同，模型很可能照第一条答，给出一份主体错误的材料清单。
+# 实测全库仅此一处冲突（太保福有余终身寿险 3.3），但一旦发生就是合规级错误。
+QUALITY_EXACT = "exact"      # 查询词即事故类型（身故 → 身故保险金 也归此级）
+QUALITY_PREFIX = "prefix"    # 事故类型以查询词开头（住院 → 住院护理津贴）
+QUALITY_PARTIAL = "partial"  # 查询词出现在事故类型中间（身故 ⊂ 投保人身故保险费豁免）
+
+
+def rank_match(accident_type, keys):
+    """给命中条目算匹配优先级，数字越小越贴近用户所问的。
+
+    keys 为空（用户没给事故类型，即「这个产品理赔要交什么材料」）时不做分级 ——
+    此时查的是全部条目，没有哪条更"贴"，全标成部分匹配会发出误导性提示。
+
+    :return: (rank, quality)。rank 用于排序，quality 用于在答案里标注。
+    """
+    if not keys:
+        return 0, QUALITY_EXACT
+    acc = accident_type or ""
+    best = (9, QUALITY_PARTIAL)
+    for key in keys:
+        # 完全等于查询词，或以「查询词+保险金」结尾（疾病身故保险金 也是身故责任）
+        if acc == key or acc == f"{key}保险金" or acc.endswith(f"{key}保险金"):
+            return 0, QUALITY_EXACT
+        if acc.startswith(key):
+            best = min(best, (1, QUALITY_PREFIX))
+        elif key in acc:
+            best = min(best, (2, QUALITY_PARTIAL))
+    return best
+
+
+def _rank_and_label(rows, keys):
+    """按匹配质量稳定排序，并把 quality 写进每条记录供 _entry 读取。
+
+    用装饰-排序-还原的写法，避免直接改 Mongo 返回的原始 dict 语义
+    （那些 dict 带 _id，回写会污染）。这里的 "写进记录" 是给同一批 dict 加
+    一个下划线前缀的临时键，只在本次调用内有效。
+    """
+    decorated = []
+    for idx, row in enumerate(rows):
+        rank, quality = rank_match(row.get("accident_type"), keys)
+        # Mongo 返回的顺序不稳定，同质量内部用原序号保证结果可复现
+        decorated.append((rank, idx, row, quality))
+    decorated.sort(key=lambda x: (x[0], x[1]))
+    ordered = []
+    for _rank, _idx, row, quality in decorated:
+        row = dict(row)
+        row["_match_quality"] = quality
+        ordered.append(row)
+    return ordered
 
 
 def describe_timeline(row):
@@ -171,9 +225,19 @@ def get_required_docs(item_name, accident_type=None, insurance_type=None):
 
     rows = tool.find_by_item(item_name, "required_docs", keys)
     if rows:
+        # 按匹配质量排序：精确/「X保险金」优先，纯子串命中（身故 ⊂ 投保人身故保险费豁免）排最后
+        rows = _rank_and_label(rows, keys)
         result["found"] = True
         result["matched_by"] = "item_name"
         result["entries"] = [_entry(r) for r in rows]
+        partial = [e["accident_type"] for e in result["entries"]
+                   if e["match_quality"] == QUALITY_PARTIAL]
+        if partial:
+            result["note"] = (
+                f"以下条目为部分匹配（查询词出现在事故类型中间，责任主体可能不同）："
+                f"{'、'.join(partial)}。回答时必须逐条写明各自对应的事故类型，"
+                f"不要把它们合并成一份清单。"
+            )
         return result
 
     # 产品有规则，但没匹配到用户问的事故类型 —— 把可选范围交出去，让上层反问

@@ -89,7 +89,17 @@ def step_4_vectorize_and_query(item_names):
             dense_vector = embeddings["dense"][i]
             sparse_vector = embeddings["sparse"][i]
             # 设置稠密向量和稀疏向量的检索方式
-            reqs = create_hybrid_search_requests(dense_vector=dense_vector, sparse_vector=sparse_vector, limit=5)
+            # ⚠️ 这里检索的是「产品名索引」集合 insurance_item_names，它的向量字段名是
+            #    dense_vector / sparse_vector（沿用旧集合命名），与条款库
+            #    insurance_clauses 的 vector / sparse 不同 —— 必须显式传入，
+            #    沿用默认值会直接抛 MilvusException(1100, fieldName not found)。
+            reqs = create_hybrid_search_requests(
+                dense_vector=dense_vector,
+                sparse_vector=sparse_vector,
+                limit=5,
+                dense_field="dense_vector",
+                sparse_field="sparse_vector",
+            )
             # 进行混合检索
             """
                 混合检索的结果的结构：
