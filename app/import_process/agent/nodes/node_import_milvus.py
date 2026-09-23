@@ -1,4 +1,3 @@
-import csv
 from datetime import datetime
 from pathlib import Path
 
@@ -6,8 +5,9 @@ from pymilvus import DataType, MilvusClient
 
 from app.clients.milvus_utils import get_milvus_client
 from app.conf.milvus_config import milvus_config
-from app.core.logger import logger, node_log, step_log, PROJECT_ROOT
+from app.core.logger import logger, node_log, step_log
 from app.import_process.agent.state import ImportGraphState
+from app.utils.ledger_utils import load_ledger_row
 from app.utils.task_utils import add_running_task, add_done_task
 
 """
@@ -28,10 +28,7 @@ from app.utils.task_utils import add_running_task, add_done_task
 CHUNKS_COLLECTION_NAME = milvus_config.chunks_collection
 
 # 建库时的 schema 版本，与 02_clause_schema.json 的 version 字段同步
-SCHEMA_VERSION = "1.1"
-
-# 语料台账：产品级元数据的单一来源（由 data/collect_clauses.py 幂等维护）
-SOURCES_CSV_PATH = Path(PROJECT_ROOT) / "data" / "clauses" / "sources.csv"
+SCHEMA_VERSION = "1.2"
 
 # 台账中文列名 → Milvus 字段名
 META_COLUMN_MAP = {
@@ -127,36 +124,29 @@ def step_0_load_product_meta(doc_id: str):
 
     台账缺失或查不到该文件时不报错，返回全空字段 —— 产品级元数据是「锦上添花」，
     不该因为一次元数据缺失就让整份条款导不进去。
+
+    读取统一走 app/utils/ledger_utils：node_item_name_recognition 也从台账取 item_name，
+    两处必须用同一套 doc_id 匹配规则，否则会出现「切片的 item_name 与 product_name
+    指向不同产品」——不报错，但按产品过滤和按产品查规则会同时失效。
     """
     empty_meta = {field_name: "" for field_name, _, _ in PRODUCT_FIELDS}
 
-    if not SOURCES_CSV_PATH.exists():
-        logger.warning(f"未找到语料台账 {SOURCES_CSV_PATH}，产品级字段将留空")
+    row = load_ledger_row(doc_id)
+    if row is None:
+        logger.warning(f"语料台账中未找到 doc_id={doc_id} 的行，产品级字段将留空")
         return empty_meta
 
-    try:
-        # utf-8-sig：台账由 Excel 维护，可能带 BOM，直接 utf-8 读会把首个列名读成 "\ufeff序号"
-        with open(SOURCES_CSV_PATH, "r", encoding="utf-8-sig", newline="") as csv_file:
-            for row in csv.DictReader(csv_file):
-                # 台账「文件名」列带 .pdf 后缀，而 doc_id 是文件 stem（不含后缀），两者归一后再比
-                csv_file_stem = Path((row.get("文件名") or "").strip()).stem
-                if csv_file_stem != doc_id:
-                    continue
-                meta = dict(empty_meta)
-                for column_name, field_name in META_COLUMN_MAP.items():
-                    meta[field_name] = _clip((row.get(column_name) or "").strip(), 256)
-                meta["insurance_type"] = INSURANCE_TYPE_MAP.get(
-                    (row.get("险种") or "").strip(), "其他"
-                )
-                logger.info(
-                    f"产品级元数据命中台账：{meta['company']} / {meta['product_name']} "
-                    f"/ {meta['product_code']} / {meta['insurance_type']}"
-                )
-                return meta
-        logger.warning(f"语料台账中未找到 doc_id={doc_id} 的行，产品级字段将留空")
-    except Exception as e:
-        logger.error(f"读取语料台账失败，产品级字段将留空：{e}", exc_info=True)
-    return empty_meta
+    meta = dict(empty_meta)
+    for column_name, field_name in META_COLUMN_MAP.items():
+        meta[field_name] = _clip((row.get(column_name) or "").strip(), 256)
+    meta["insurance_type"] = INSURANCE_TYPE_MAP.get(
+        (row.get("险种") or "").strip(), "其他"
+    )
+    logger.info(
+        f"产品级元数据命中台账：{meta['company']} / {meta['product_name']} "
+        f"/ {meta['product_code']} / {meta['insurance_type']}"
+    )
+    return meta
 
 
 @step_log("step_1_validate_input")

@@ -93,22 +93,57 @@ _FALLBACK_TYPE_KEYWORDS = {
     "争议处理与法律适用": ["争议处理", "管辖", "诉讼", "法律适用", "司法管辖"],
 }
 
+# 章节级兜底词表。含义：条款小标题匹配不到时，用 clause_path 的一级章节名再匹配一次。
+#
+# 为什么需要它：释义章的子条目（如「10.10 无合法有效行驶证」）小标题里根本不含「释义」，
+# 关键词只写在父级章节上，单靠小标题永远够不着 —— 这是「其他」占比 61% 的真实成因，
+# 不是关键词表词不够。实测仅此一处改动就把「其他」从 592/966 降到 93/966。
+_FALLBACK_SECTION_KEYWORDS = {
+    # 疾病定义章归「保障责任」：它界定「保哪些病」，属责任范围
+    "保障责任": [
+        "我们提供的保障", "本公司提供的保障", "保障范围",
+        "重大疾病的定义", "中症疾病的定义", "轻症疾病的定义",
+        "特定疾病的定义", "少儿特定重大疾病的定义", "成人特定重大疾病的定义",
+    ],
+    "释义": ["释义"],
+    "保险金申请": ["保险金的申请", "保险金及保险费豁免的申请"],
+    "保险金给付": ["保险金的给付"],
+    "保险费": ["保险费的支付"],
+    "现金价值与退保": ["现金价值权益"],
+    "合同构成与效力": [
+        "您与我们的保险合同", "您与我们订立的合同", "双方订立的合同",
+        "保险合同的变更", "合同效力的中止及恢复", "效力中止与恢复",
+    ],
+    "争议处理与法律适用": ["争议的处理"],
+}
+
+# 章节名里的编号前缀：「10 释义」→「释义」，「1．您与我们的保险合同」→「您与我们的保险合同」
+RE_SECTION_NUM_PREFIX = re.compile(r"^\s*\d+(?:\.\d+)*\s*[．.]?\s*")
+
 
 def load_clause_type_keywords():
     """
-    读取条款类型关键词表。
+    读取条款类型词表，返回 (标题级词表, 章节级词表) 二元组。
+
     单一事实来源是 insurance_kb/02_clause_schema.json（与 SFT 输出契约共用同一份定义），
     读不到时退回内置兜底表，保证节点不会因外部文件缺失而中断。
     """
     schema_path_obj = Path(PROJECT_ROOT) / "insurance_kb" / "02_clause_schema.json"
     try:
         schema = json.loads(schema_path_obj.read_text(encoding="utf-8"))
-        keywords = schema["enums"]["clause_type"]["match_keywords"]
+        clause_type = schema["enums"]["clause_type"]
+        match_keywords = clause_type["match_keywords"]
         # 去掉「其他」，它由匹配失败兜底产生，不参与正向匹配
-        return {k: v for k, v in keywords.items() if k != "其他" and v}
+        title_keywords = {k: v for k, v in match_keywords.items() if k != "其他" and v}
+        # 章节级词表是 schema v1.2 新增；读到老版本 schema 时缺省，此时用内置兜底表顶上，
+        # 否则章节兜底会静默失效、全部退回「其他」
+        section_keywords = {
+            k: v for k, v in (clause_type.get("section_keywords") or {}).items() if v
+        } or _FALLBACK_SECTION_KEYWORDS
+        return title_keywords, section_keywords
     except Exception as e:
         logger.warning(f"读取 clause_type 关键词表失败，使用内置兜底表：{e}")
-        return _FALLBACK_TYPE_KEYWORDS
+        return _FALLBACK_TYPE_KEYWORDS, _FALLBACK_SECTION_KEYWORDS
 
 
 @step_log("step_1_get_content")
@@ -324,6 +359,27 @@ def match_clause_type(clause_title: str, clause_type_keywords: dict) -> str:
     return "其他"
 
 
+def match_clause_type_by_section(clause_path: str, section_keywords: dict) -> str:
+    """
+    章节级兜底：条款小标题匹配不到时，用 clause_path 的一级章节名再匹配一次。
+
+    为什么必须「精确相等」而不是子串包含：父级章节名可能恰好含其他类型的关键词，
+    子串包含会误标 —— 实测「6 合同效力的中止及恢复」会被判成「保险期间」（含「合同效力」，
+    6 条）、「3 保险金及保险费豁免的申请」下的条款会被判成「保险费」（4 条）。
+    父级章节名是条款自己写的结构，只做查表，不做语义外推。
+    """
+    if not clause_path:
+        return "其他"
+    parent = RE_SECTION_NUM_PREFIX.sub("", clause_path.split(">")[0].strip()).strip()
+    if not parent:
+        return "其他"
+    for clause_type, section_names in section_keywords.items():
+        # 列表成员判断即精确相等；不写成 `in parent` 是为了避免子串误标
+        if parent in section_names:
+            return clause_type
+    return "其他"
+
+
 @step_log("step_4_refine_chunks")
 def step_4_refine_chunks(sections, file_title: str):
     """
@@ -331,8 +387,10 @@ def step_4_refine_chunks(sections, file_title: str):
 
     关键点：章级条款（有子条款的 `1．`/`第1章`）本身不产生切片，只作为子条款的 clause_path 前缀；
     无子条款的一级条款（如中英的「第5章 现金价值」）则自身产生一个切片，否则内容会整段丢失。
+
+    分类走两级：小标题优先，够不着再按 clause_path 的一级章节名兜底。
     """
-    clause_type_keywords = load_clause_type_keywords()
+    clause_type_keywords, section_keywords = load_clause_type_keywords()
 
     # 统计哪些顶层锚点下存在子条款
     top_with_children = set()
@@ -356,7 +414,8 @@ def step_4_refine_chunks(sections, file_title: str):
                 if full_text:
                     final_chunks.extend(
                         build_chunk(
-                            section, full_text, file_title, None, clause_type_keywords
+                            section, full_text, file_title, None,
+                            clause_type_keywords, section_keywords
                         )
                     )
             continue
@@ -368,13 +427,15 @@ def step_4_refine_chunks(sections, file_title: str):
             continue
         final_chunks.extend(
             build_chunk(
-                section, full_text, file_title, current_top_section, clause_type_keywords
+                section, full_text, file_title, current_top_section,
+                clause_type_keywords, section_keywords
             )
         )
     return final_chunks
 
 
-def build_chunk(section, full_text, file_title, top_section, clause_type_keywords):
+def build_chunk(section, full_text, file_title, top_section, clause_type_keywords,
+                section_keywords):
     """对单个条款做 L1/L2/L3 分级切分，产出符合 02_clause_schema.json 的切片字典"""
     pieces = split_long_text(full_text)
 
@@ -387,7 +448,10 @@ def build_chunk(section, full_text, file_title, top_section, clause_type_keyword
     else:
         clause_path = f'{section["clause_no_norm"]} {section["clause_title"]}'.strip()
 
+    # 两级匹配：小标题优先；够不着时按父级章节兜底（释义章的子条目靠这一步才能归类）
     clause_type = match_clause_type(section["clause_title"], clause_type_keywords)
+    if clause_type == "其他":
+        clause_type = match_clause_type_by_section(clause_path, section_keywords)
 
     chunk_list = []
     for chunk_seq, (chunk_level, piece_text) in enumerate(pieces, start=1):

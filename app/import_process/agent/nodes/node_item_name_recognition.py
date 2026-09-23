@@ -13,6 +13,7 @@ from app.core.logger import logger, node_log, step_log
 from app.import_process.agent.state import ImportGraphState
 from app.lm.embedding_utils import generate_embeddings
 from app.lm.lm_utils import get_llm_client
+from app.utils.ledger_utils import load_product_name, sanitize_item_name
 from app.utils.task_utils import add_running_task, add_done_task
 
 # 大模型识别商品名称的上下文切片数：取前5个切片，避免上下文过长导致大模型输入超限
@@ -64,8 +65,9 @@ def step_2_build_context(chunks):
     context = context[:CONTEXT_TOTAL_MAX_CHARS]
     return context
 
-@step_log("step_3_call_llm")
-def step_3_call_llm(context, file_title):
+@step_log("step_3b_llm_fallback")
+def _call_llm_for_item_name(context, file_title):
+    """台账缺行时的兜底路径：让大模型从条款正文里识别产品名。"""
     # 分别获取用户提示词和系统提示词
     human_prompt = load_prompt("item_name_recognition", file_title=file_title, context=context)
     system_prompt = load_prompt("product_recognition_system")
@@ -79,11 +81,37 @@ def step_3_call_llm(context, file_title):
     # 创建链对象
     chain = llm | StrOutputParser()
     # 调用链对象
-    item_name = chain.invoke(messages)
-    # 判断item_name是否为空
-    if not item_name:
-        item_name = file_title
-    return item_name
+    return chain.invoke(messages)
+
+
+@step_log("step_3_resolve_item_name")
+def step_3_resolve_item_name(context, file_title):
+    """确定 item_name：**台账备案名优先**，大模型只做兜底。
+
+    为什么不让大模型主导
+--------------------
+    item_name 不是展示字段，是**键**：条款库靠它做检索过滤（``expr = item_name in [...]``），
+    产品名库靠它做向量对齐，MongoDB 规则表靠它精确查规则。三处必须逐字一致。
+
+    而大模型输出格式不受控 —— 换模型后同一份文档开始返回带成对引号的空串 ``""``，
+    5 份文档的 item_name 因此塌缩成同一个键：265 个切片挤在一起（跨产品互相召回），
+    产品名库多出孤儿行，6 款产品的理赔规则全部查不到。**服务不报错，只是答不出东西。**
+
+    台账「产品名称」列是监管备案名，实测与历史大模型产出 17/17 逐字一致，
+    所以改用它不改变任何已有数据，却让 item_name 摆脱对模型行为的依赖。
+
+    :return: (item_name, 来源标记) —— 来源会打进日志，便于事后判断走没走兜底
+    """
+    from_ledger = load_product_name(file_title)
+    if from_ledger:
+        return from_ledger, "ledger"
+
+    # 台账缺行（新采语料尚未登记）时才调大模型，且必须清洗后再用
+    raw = _call_llm_for_item_name(context, file_title)
+    logger.warning(
+        f"台账中未找到 file_title={file_title}，item_name 回退大模型识别：{raw!r}"
+    )
+    return sanitize_item_name(raw, file_title), "llm"
 
 @step_log("step_4_update_chunks_and_state")
 def step_4_update_chunks_and_state(state, item_name, chunks):
@@ -164,11 +192,17 @@ def step_6_save_to_vector_db(file_title, item_name, dense_vector, sparse_vector)
 def node_item_name_recognition(state: ImportGraphState) -> ImportGraphState:
     """
     节点: 主体识别 (node_item_name_recognition)
-    为什么叫这个名字: 识别文档核心描述的物品/商品名称 (Item Name)。
-    未来要实现:
-    1. 取文档前几段内容。
-    2. 调用 LLM 识别这篇文档讲的是什么东西 (如: "Fluke 17B+ 万用表")。
-    3. 存入 state["item_name"] 用于后续数据幂等性清理。
+
+    产出 state["item_name"]，并把它回填到每个切片上。这个字段同时承担三个角色，
+    所以它的取值必须是**确定性**的：
+
+    1. 检索过滤键 —— 查询侧用它做 `expr = item_name in [...]`，隔离到用户选中的产品；
+    2. 产品名库的向量对齐目标 —— 用户口语化的产品名靠它对齐到库里的产品；
+    3. MongoDB 规则表的查询键 —— 理赔材料/时限规则按它精确查。
+
+    取值来源：语料台账的「产品名称」列（监管备案名）。大模型只在台账缺行时兜底，
+    且兜底结果必须过 sanitize_item_name —— 大模型输出格式不受控，实测换模型后
+    会返回带引号的空串，一旦这种值当上键，整条链路会静默失效（详见 step_3）。
     """
     # 记录任务的状态为运行中
     add_running_task(state["task_id"], "node_item_name_recognition")
@@ -176,8 +210,9 @@ def node_item_name_recognition(state: ImportGraphState) -> ImportGraphState:
     chunks, file_title = step_1_get_chunks_and_file_title(state)
     # 步骤2：构建上下文环境  chunks -> top 5 -> 拼接成context文本
     context = step_2_build_context(chunks)
-    # 步骤3：调用模型，拼接提示词，识别chunks对应item_name
-    item_name = step_3_call_llm(context, file_title)
+    # 步骤3：确定 item_name —— 台账备案名优先，大模型仅兜底
+    item_name, item_name_source = step_3_resolve_item_name(context, file_title)
+    logger.info(f"item_name 来源={item_name_source} → {item_name}")
     # 步骤4：产品主体回填，修改state chunks -> item_name
     step_4_update_chunks_and_state(state, item_name, chunks)
     # 步骤5：item_name生成向量（稠密/稀疏）
