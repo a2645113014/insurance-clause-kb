@@ -148,15 +148,14 @@ def make_cached_rerank(cache: Cache):
                 scores = [scores]
             for it, s in zip(pending, scores):
                 cache.rerank[rerank_key(query, it)] = float(s)
-        scored = [{
-            "text": it["text"],
-            "score": cache.rerank[rerank_key(query, it)],
-            "doc_id": it.get("doc_id", ""),
-            "pk": it.get("pk", ""),
-            "url": it.get("url", ""),
-            "title": it.get("title", ""),
-            "source": it.get("source", ""),
-        } for it in doc_items]
+        # ⚠️ 必须与线上 node_rerank.step_2_rerank_docs 保持同一套字段转发方式：
+        # 用 dict(it) 整体转发而不是逐字段白名单 —— 白名单曾经把 clause_no 丢掉，
+        # 导致评测台与线上行为分叉（评测台看不出引用编号缺失）。改线上时必须同步这里。
+        scored = []
+        for it in doc_items:
+            record = dict(it)
+            record["score"] = cache.rerank[rerank_key(query, it)]
+            scored.append(record)
         scored.sort(key=lambda d: d["score"], reverse=True)
         return scored
     return _step2
