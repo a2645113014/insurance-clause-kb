@@ -10,6 +10,10 @@ from app.core.load_prompt import load_prompt
 from app.core.logger import logger, node_log, step_log
 from app.lm.embedding_utils import generate_embeddings
 from app.lm.lm_utils import get_llm_client
+from app.query_process.agent.nodes.node_compliance_check import (
+    extract_clause_text,
+    is_compliance_query,
+)
 from app.query_process.agent.state import QueryGraphState
 from app.utils.task_utils import add_running_task, add_done_task
 
@@ -202,6 +206,11 @@ def step_6_check_confirmation(state, align_result, session_id, history_list, rew
     # 分别获取已确认和待确认的item_name的列表
     confirmed = align_result.get("confirmed_item_names", [])
     options = align_result.get("options", [])
+    # 合规审查类问题需要特殊处理下面两条兜底答复（原因见各分支注释）
+    compliance_mode = is_compliance_query(state)
+    has_inline_clause = bool(
+        extract_clause_text(state.get("rewritten_query") or state.get("original_query") or "")
+    )
     # 分支1：有已确认的item_name
     if confirmed:
         # 更新历史记录中item_names
@@ -223,7 +232,9 @@ def step_6_check_confirmation(state, align_result, session_id, history_list, rew
             del state["answer"]
         return state
     # 分支2：有待确认的item_name
-    if options:
+    # 但若用户已经把待审条款原文整段贴进来了，就不必再回头问「是哪个产品」——
+    # 合规审查的对象是那段表述本身，与它属于哪款产品无关。
+    if options and not (compliance_mode and has_inline_clause):
         # 获取并拼接待确认的item_name
         options_str = "、".join(options)
         # 拼接待确认信息
@@ -233,6 +244,17 @@ def step_6_check_confirmation(state, align_result, session_id, history_list, rew
         state["answer"] = answer
         return state
     # 分支3：既没有已确认也没有待确认
+    # 合规审查类问题**不设这条兜底答复**。原因有两条，都会真实发生：
+    # ① 审查对象可以由用户整段直接给出，根本不依赖产品名，回「未找到相关产品」
+    #    是答非所问；而这条记录会立刻落库（step_7），与紧随其后的真实判定
+    #    互相矛盾，后续多轮改写还会把它读进上下文。
+    # ② 图的路由先查 answer（见 main_graph.condition_fun），一旦这里有值，
+    #    合规分支就再也进不去了。
+    # 缺什么由合规节点自己说明，它比这里更清楚（会区分「没给原文」与「没定位到产品」）。
+    if compliance_mode:
+        logger.info("合规审查类问题：跳过「未找到相关产品」兜底，交由合规分支处理")
+        state["item_names"] = []
+        return state
     # 拼接待确认信息
     answer = "抱歉，未找到相关产品，请提供准确型号以便我为您查询。"
     # 更新状态
