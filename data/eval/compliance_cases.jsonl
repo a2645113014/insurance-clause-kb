@@ -1,0 +1,27 @@
+{"id": "V01", "group": "violation", "product_scope": null, "gold_item_no": 12, "clause_text": "申请身故保险金时，申请人除提供死亡证明或户籍注销证明外，还须提供火化证明与丧葬证明。", "note": "条12 明确列举「人寿保险条款约定身故保险金申请除死亡证明/户籍注销证明外，还需提供火化证明、丧葬证明」为不合理材料要求。"}
+{"id": "V02", "group": "violation", "product_scope": null, "gold_item_no": 15, "clause_text": "被保险人身故后，本公司不一次性全额给付身故保险金，而是按本合同约定的标准分期给付生存金给受益人。", "note": "条15 列举「身故后不全额给付，按约定标准分期给付生存金给受益人」。"}
+{"id": "V03", "group": "violation", "product_scope": null, "gold_item_no": 15, "clause_text": "被保险人经医院确诊罹患本合同所载疾病的，需自确诊之日起生存满三十日，本公司方给付保险金。", "note": "条15 列举「疾病保险约定确诊后需生存一定期限方可获得保险金给付」。"}
+{"id": "V04", "group": "violation", "product_scope": "医疗保险", "gold_item_no": 16, "clause_text": "本产品保险期间届满时，本公司如未收到投保人的不续保申请，则视同续保，投保人应按约定交纳续期保险费。", "note": "条16「届满时未收到不续保申请则视同续保，侵害消费者选择权」。"}
+{"id": "V05", "group": "violation", "product_scope": "护理保险", "gold_item_no": 21, "clause_text": "因细菌或病毒感染引发的保险事故，本公司不承担给付保险金的责任。", "note": "条21 列举护理保险约定对细菌或病毒感染免责。"}
+{"id": "V06", "group": "violation", "product_scope": null, "gold_item_no": 13, "clause_text": "除另有约定外，本合同身故保险金的第一受益人为贷款发放机构。", "note": "条13 列举受益人表述为「第一受益人为贷款发放机构」。"}
+{"id": "V07", "group": "violation", "product_scope": null, "gold_item_no": 8, "clause_text": "本合同项下保险金请求权的诉讼时效为一年，自被保险人或受益人知道保险事故发生之日起计算。", "note": "条8 约定诉讼时效与《保险法》不一致（法定为三年）。"}
+{"id": "V08", "group": "violation", "product_scope": null, "gold_item_no": 10, "clause_text": "因本合同发生的争议，双方约定由保险人住所地人民法院或保险单签发地人民法院管辖。", "note": "条10 约定管辖法院范围与《民事诉讼法》地域管辖规定不符。"}
+{"id": "V09", "group": "violation", "product_scope": "短期健康保险", "gold_item_no": 18, "clause_text": "本产品为短期健康保险产品，续保时本公司有权根据医疗费用水平变化调整保险费率。", "note": "条18 短期健康保险条款含续保时可能调整费率的表述。"}
+{"id": "V10", "group": "violation", "product_scope": "健康保险", "gold_item_no": 19, "clause_text": "投保人申请解除本合同时，应当同时申请解除本合同的附加险合同，不得单独解除附加险。", "note": "条19 约定消费者不得单独解除附加险。"}
+{"id": "V11", "group": "violation", "product_scope": null, "gold_item_no": 41, "alt_item_nos": [35, 59], "clause_text": "被保险人在等待期内发生保险事故的，本公司按已交保险费的百分之五十退还，不承担给付保险金责任。", "note": "条41 通过等待期内不全额退还保费变相惩罚消费者。"}
+{"id": "V12", "group": "violation", "product_scope": "医疗保险", "gold_item_no": 27, "clause_text": "本合同项下处方审核由本公司委托的第三方医疗服务机构负责，审核结果以该机构意见为准。", "note": "条27（2026 版新增）处方审核主体约定为第三方服务商，且未明确列明保险公司应承担的审核责任。"}
+{"id": "V13", "group": "violation", "product_scope": "医疗保险", "gold_item_no": 45, "alt_item_nos": [21], "clause_text": "被保险人用药时长符合慈善赠药申请条件，但因未提交相关申请或申请材料不全导致慈善赠药申请未通过的，该部分药品费用本公司不承担给付责任。", "note": "条45 责任免除包含慈善赠药未通过的费用，涉嫌加重被保险人义务。"}
+{"id": "V14", "group": "violation", "product_scope": null, "gold_item_no": 12, "clause_text": "意外身故保险金申请除提供公安交通管理部门出具的事故认定书外，还须提供当次交通工具客票存根。", "note": "条12 列举意外伤害保险要求提供客票（存根）等不合理材料。"}
+{"id": "C01", "group": "compliant", "product_scope": null, "gold_item_no": null, "clause_text": "自投保人签收保险单之日起十五日内为犹豫期。投保人在犹豫期内要求解除本合同的，本公司无息退还已交保险费。", "note": "犹豫期与全额退费的规范写法，无对应禁止性条目。"}
+{"id": "C02", "group": "compliant", "product_scope": null, "gold_item_no": null, "clause_text": "本合同的保险期间为十一年，自本合同生效之日起计算。", "note": "保险期间约定的规范写法。"}
+{"id": "C03", "group": "compliant", "product_scope": null, "gold_item_no": null, "clause_text": "投保人于犹豫期后要求解除本合同的，本公司自收到解除合同通知书之日起三十日内，向投保人退还本合同当时的现金价值。", "note": "退保与现金价值条款的规范写法（与《保险法》一致）。"}
+{"id": "C04", "group": "compliant", "product_scope": null, "gold_item_no": null, "clause_text": "投保人或被保险人可以指定一人或数人为身故保险金受益人。受益人为数人的，可以确定受益顺序和受益份额。", "note": "受益人指定的规范写法，未出现「贷款发放机构」等违规表述。"}
+{"id": "C05", "group": "compliant", "product_scope": null, "gold_item_no": null, "clause_text": "因下列情形之一导致被保险人身故的，本公司不承担给付保险金的责任：一、投保人对被保险人的故意杀害、故意伤害；二、被保险人故意犯罪或抗拒依法采取的刑事强制措施；三、被保险人自本合同成立之日起二年内自杀。", "note": "免责条款集中列明的规范写法（正合条2「应统一、集中」的要求）。"}
+{"id": "C06", "group": "compliant", "product_scope": null, "gold_item_no": null, "clause_text": "申请身故保险金时，申请人须填写保险金给付申请书，并提供下列证明和资料：一、保险合同；二、申请人的有效身份证件；三、国家卫生行政部门规定的医疗机构出具的死亡证明。", "note": "理赔材料的规范清单，不含火化证明/丧葬证明等不合理要求。"}
+{"id": "C07", "group": "compliant", "product_scope": null, "gold_item_no": null, "clause_text": "本公司收到保险金给付申请书及本合同约定的证明和资料后，将在五个工作日内作出核定；情形复杂的，在三十日内作出核定。", "note": "理赔时限的规范写法（符合《保险法》第二十三条）。"}
+{"id": "C08", "group": "compliant", "product_scope": null, "gold_item_no": null, "clause_text": "本合同的基本保险金额为人民币十万元，由投保人与本公司在投保时约定并在保险单上载明。", "note": "保险金额约定的规范写法（对应条7 要求的与《保险法》概念一致）。"}
+{"id": "C09", "group": "compliant", "product_scope": "短期健康保险", "gold_item_no": null, "clause_text": "本产品保险期间为一年。保险期间届满，投保人需要重新向本公司申请投保本产品，经本公司同意并交纳保险费后，方可获得新的保险合同。", "note": "不保证续保的正确表述方式（条22 批评的是错误表述，不是不保证续保本身）。"}
+{"id": "C10", "group": "compliant", "product_scope": "健康保险", "gold_item_no": null, "clause_text": "既往症指在本合同生效日之前，被保险人已患且已知晓的疾病。", "note": "条24 要求的既往症标准定义表述，逐字合规。"}
+{"id": "B01", "group": "boundary", "product_scope": "医疗保险", "gold_item_no": 33, "clause_text": "本合同的年度免赔额为一万元，被保险人自社会医疗保险获得的补偿金额可用于抵扣免赔额。", "note": "条33「医疗保险设置过高的免赔额」—— 一万元是否算过高是主观判断，观察模型是敢判还是判无法判定。"}
+{"id": "B02", "group": "boundary", "product_scope": "健康保险", "gold_item_no": 35, "clause_text": "本健康保险产品的等待期为一百八十日。", "note": "条35「等待期设置过长」—— 时长缺失对照基准，属主观边界。"}
+{"id": "B03", "group": "boundary", "product_scope": "年金保险", "gold_item_no": 32, "alt_item_nos": [47, 49], "clause_text": "本合同提供加保与减保功能，投保人可在保险期间内申请增加或减少本合同的基本保险金额。", "note": "条32/47「加减保功能实现类万能型自由领取」—— 是否异化取决于费率与比例约定，单看这句无法断定。"}

@@ -22,6 +22,10 @@ class QueryGraphState(TypedDict):
     rule_tool_result: dict  # 规则工具的原始返回，供调试与溯源
     rule_context: str  # 规则结果转成的文本，由 node_answer_output 拼进 context
 
+    # 合规审查层数据（Phase 3.2）：对照负面清单判定待审表述，依据来自 MongoDB compliance_rules
+    compliance_result: dict  # 合规工具的原始返回（含召回条目、召回来源计数、子集声明）
+    compliance_context: str  # 装配好的负面清单文本块，供 prompt 的 {negative_list_items} 占位符
+
     # 生成过程中的数据
     prompt: str  # 组装好的 Prompt
     answer: str  # 最终生成的答案
@@ -46,6 +50,8 @@ query_graph_default_state: QueryGraphState = {
     "reranked_docs": [],
     "rule_tool_result": {},
     "rule_context": "",
+    "compliance_result": {},
+    "compliance_context": "",
     "prompt": "",
     "answer": "",
     "item_names": [],

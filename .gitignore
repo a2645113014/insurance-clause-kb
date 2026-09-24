@@ -46,6 +46,12 @@ output/
 temp-files/
 *.log
 
+# 评测的缓存与报告：属运行产物，按 test/12、test/13 重跑即可再生，不入库。
+# 入库的只有**评测集的输入**（如 data/eval/retrieval_cases.jsonl、
+# data/eval/compliance_cases.jsonl），它们是要人工维护的金标。
+data/eval/*_cache.jsonl
+data/eval/compliance_eval_*.json
+
 # ---------- 7. 保险条款语料：版权归保险公司，原文不入库 ----------
 # 清单 §8.1：公开可查 ≠ 可再分发，项目展示只放少量样例 + 采集说明，不打包发布语料。
 # 只保留 sources.csv（纯元数据）与 chunks/（本项目自产的切分结果）。
